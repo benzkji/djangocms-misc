@@ -1,9 +1,9 @@
 from django.conf import settings
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
-from cms.constants import PUBLISHER_STATE_DIRTY
+# from cms.constants import PUBLISHER_STATE_DIRTY
 from cms.models import CMSPlugin
-from cms.signals import post_placeholder_operation, post_publish  # , post_obj_operation
+from cms.signals import post_placeholder_operation  # , post_publish  # , post_obj_operation
 
 from djangocms_misc.global_untranslated_placeholder.utils import get_untranslated_default_language_if_enabled
 
@@ -23,7 +23,8 @@ def pre_cms_plugin_save(**kwargs):
             instance.language = lang
 
 
-if 'djangocms_misc.autopublisher' not in settings.INSTALLED_APPS:
+# if 'djangocms_misc.autopublisher' not in settings.INSTALLED_APPS:
+if False:
 
     # published. if not default language, publish default as well
     # if DJANGOCMS_MISC_UNTRANSLATED_MARK_ALL = True, publish all langs (usability thing, mostly)

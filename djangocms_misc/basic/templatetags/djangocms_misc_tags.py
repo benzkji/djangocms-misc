@@ -68,10 +68,10 @@ def djangocms_misc_get_from_page_content(context, config_name, page_lookup=None)
         try:
             page_reverse_id = str(page_lookup)
             qs = Page.objects.all()
-            if is_edit_mode(request.toolbar):
-                qs = qs.drafts()
-            else:
-                qs = qs.public()
+            # if is_edit_mode(request.toolbar):
+            #     qs = qs.drafts()
+            # else:
+            #     qs = qs.public()
             page = qs.get(reverse_id=page_reverse_id)
         except (ValueError, Page.DoesNotExist):
             pass
@@ -84,7 +84,7 @@ def djangocms_misc_get_from_page_content(context, config_name, page_lookup=None)
 
 
 def get_from_page_content(request, config, page):
-    placeholders = page.get_placeholders()
+    placeholders = page.get_placeholders(request.LANGUAGE_CODE)
     to_scan_placeholders = config.get('placeholders')
     to_scan_plugins = config.get('plugins')
     for slot_name in to_scan_placeholders:

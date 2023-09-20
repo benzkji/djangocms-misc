@@ -8,6 +8,7 @@ DEBUG = True
 logging.getLogger("factory").setLevel(logging.WARN)
 
 SITE_ID = 1
+CMS_CONFIRM_VERSION4 = True
 
 # from selenium.webdriver.firefox import webdriver
 # from selenium.webdriver.phantomjs import webdriver
@@ -143,6 +144,7 @@ EXTERNAL_APPS = [
     'sekizai',
     'treebeard',
     'cms',
+    'djangocms_versioning',
     'djangocms_link',
     'djangocms_text_ckeditor',
     'djangocms_admin_style',
@@ -183,7 +185,6 @@ MIDDLEWARE = [
     # Uncomment the next line for simple clickjacking protection:
     'djangocms_misc.basic.middleware.RedirectFirstSubpageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'django.middleware.locale.LocaleMiddleware',
 ]
 
 INSTALLED_APPS = INTERNAL_APPS + EXTERNAL_APPS
