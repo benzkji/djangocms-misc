@@ -148,7 +148,6 @@ EXTERNAL_APPS = [
     'djangocms_admin_style',
     'menus',
     'filer',
-    'mptt',
     # 'hvad',
     'modeltranslation',
     # 'ckeditor',
