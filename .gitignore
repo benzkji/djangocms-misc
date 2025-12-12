@@ -4,7 +4,7 @@
 *.log
 *.egg-info
 .idea/*
-db.sqlite
+*.sqlite
 .coverage
 htmlcov
 .tox
