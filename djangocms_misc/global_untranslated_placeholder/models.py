@@ -34,13 +34,18 @@ def _get_placeholder_for_language(self, language, placeholder, page=None):
 def new_renderer__init__(self, request):
     self.__original_init__(request)
     lang = get_untranslated_default_language_if_enabled()
+    print(lang)
     if lang:
+        print("whate")
         self.request_language = lang
+    print("whate")
+    print(self.request_language)
 
 
 def new_content_render_placeholder(self, placeholder, context, language=None, page=None,
                            editable=False, use_cache=False, nodelist=None, width=None):
     language = language or self.request_language
+    print(f"content renderer {language}")
     default_page, default_placeholder = self._get_placeholder_for_language(language, placeholder, page)
     return self.__original_render_placeholder(default_placeholder, context, language, default_page, editable, use_cache, nodelist, width)
 
