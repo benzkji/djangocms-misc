@@ -1,0 +1,122 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "djangocms-misc"
+dynamic = ["version"]
+description = "djangocms misc"
+readme = "PYPI.md"
+license = { text = "MIT Licence" }
+authors = [
+    { name = "Ben Stähli", email = "bnzk@bnzk.ch" },
+]
+dependencies = [
+    "django>=1.8",
+    "django-appconf>=1.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Topic :: Internet :: WWW/HTTP",
+]
+
+[project.urls]
+Homepage = "https://github.com/bnzk/djangocms-misc"
+
+[tool.hatch.version]
+path = "djangocms_misc/__init__.py"
+
+[tool.hatch.build]
+include = ["/djangocms_misc"]
+
+
+[tool.ruff]
+# Enable the pycodestyle (`E`) and Pyflakes (`F`) rules by default.
+# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
+# McCabe complexity (`C901`) by default.
+# B = Bugbear
+# DJ = django
+# T20 = print
+select = [
+  # pyflakes, pycodestyle
+  "F", "E", "W",
+  # mmcabe
+  "C90",
+  # isort
+  "I",
+  # pep8-naming
+  # "N",
+  # pyupgrade
+  # "UP",
+  # flake8-2020
+  "YTT",
+  # flake8-boolean-trap
+  # "FBT",
+  # flake8-bugbear
+  # "B",
+  # flake8-comprehensions
+  "C4",
+  # flake8-django
+  "DJ",
+  # flake8-pie
+  # "PIE",
+  # flake8-simplify
+  # "SIM",
+  # flake8-gettext
+  "INT",
+  # pygrep-hooks
+  # "PGH",
+  # pylint
+  # "PL",
+  # unused noqa
+  "RUF100",
+  # flake8-print
+  "T20",
+]
+ignore = []
+# Avoid trying to fix flake8-bugbear (`B`) violations.
+unfixable = ["B"]
+
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    # "migrations",
+]
+per-file-ignores = {}
+
+# Same as Black.
+line-length = 88
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Assume Python 3.11
+target-version = "py311"
+
+[tool.ruff.mccabe]
+max-complexity = 15
