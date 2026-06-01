@@ -181,6 +181,7 @@ MIDDLEWARE = [
     'cms.middleware.user.CurrentUserMiddleware',
     'cms.middleware.page.CurrentPageMiddleware',
     'cms.middleware.toolbar.ToolbarMiddleware',
+    'djangocms_misc.global_untranslated_placeholder.middleware.EditModeDefaultLanguageMiddleware',
     'cms.middleware.language.LanguageCookieMiddleware',
     # Uncomment the next line for simple clickjacking protection:
     'djangocms_misc.basic.middleware.RedirectFirstSubpageMiddleware',

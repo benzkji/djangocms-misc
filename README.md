@@ -174,13 +174,40 @@ If you want custom items in your administration menu, create your own `cms_toolb
 - WARNING: experimental
 
 Get real untranslated placeholders, that have the same plugins,
-for all languages. monkey patch `cms.plugin_rendering.ContentRenderer`, to one language only,
-always. Very simple patch, but side effects still need to be checked out (haystack / aldryn_search seems ok?!)
+for all languages. Monkey-patches `cms.plugin_rendering.ContentRenderer` and
+`StructureRenderer` so every placeholder renders the plugins of one configured
+"default" language, regardless of the request language. Per-plugin translation
+is then expected to happen inside the plugin itself.
 
-usage: add `djangocms_misc.gloabl_untranslated_placeholder` to `INSTALLED_APPS`. In your settings,
- add `DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS = True` or ` = 'lang_code'`, `True` would default
- to your settings `LANGUAGE_CODE`. This is then the language your plugins will be filled in and
- rendered.
+Works with django-cms 4.1+ (with or without `djangocms-versioning`).
+
+usage: add `djangocms_misc.global_untranslated_placeholder` to `INSTALLED_APPS`.
+In your settings, add `DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS = True` or
+`= 'lang_code'`; `True` falls back to `settings.LANGUAGE_CODE`. This is the
+language your plugins will be stored and rendered in.
+
+Add the edit-mode redirect middleware **after** `cms.middleware.toolbar.ToolbarMiddleware`:
+
+    MIDDLEWARE = [
+        ...
+        'cms.middleware.toolbar.ToolbarMiddleware',
+        'djangocms_misc.global_untranslated_placeholder.middleware.EditModeDefaultLanguageMiddleware',
+        ...
+    ]
+
+It redirects edit/structure/preview URLs for any non-default-language
+content object to the default-language sibling's URL, so every plugin edit
+lands on the default-language placeholders without per-endpoint patching.
+
+Generalization beyond `PageContent`: the addon discovers language-aware
+content models from `djangocms-versioning`'s `VersionableItem` registry —
+any versionable whose grouping fields include `"language"` is handled
+generically (the sibling lookup uses the versionable's grouper field and
+matches version state). `PageContent` without versioning installed keeps
+working through a small fallback. Models that don't have a `language`
+field (e.g. django-modeltranslation-style single-record models) are not
+swapped — they don't need to be, since the same row holds all languages —
+but the `pre_save` signal still pins `CMSPlugin.language` to the default.
 
 
 ### Autopublisher
