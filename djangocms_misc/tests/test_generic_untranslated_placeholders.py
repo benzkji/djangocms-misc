@@ -7,11 +7,18 @@ versionable, and the PageContent-without-versioning fallback.
 from unittest import mock
 
 from cms.api import add_plugin
-from cms.models import Placeholder
 from cms.utils.placeholder import get_placeholder_from_slot
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ImproperlyConfigured
+from django.db.models.signals import post_save
 from django.test import RequestFactory, TestCase, override_settings
+
+from djangocms_misc.global_untranslated_placeholder.apps import (
+    MIDDLEWARE_PATH,
+    TOOLBAR_MIDDLEWARE_PATH,
+    GlobalUntranslatedPlaceholderConfig,
+)
 
 from djangocms_misc.global_untranslated_placeholder import utils
 from djangocms_misc.global_untranslated_placeholder.middleware import (
@@ -30,6 +37,20 @@ from djangocms_misc.tests.test_app.models import (
 )
 
 
+class _BaseTestCase(TestCase):
+    def setUp(self):
+        # The djangocms_misc.autopublisher app is not ported to CMS 4 yet;
+        # when test_autopublisher.py runs @modify_settings(INSTALLED_APPS=...)
+        # it connects a post_save handler that calls CMS-3.x-only methods,
+        # and the handler stays connected for the rest of the test process.
+        # Defensively disconnect it.
+        post_save.disconnect(
+            sender=None,
+            dispatch_uid='cms_autopublisher_publish_check_save_plugin_instance',
+        )
+        super().setUp()
+
+
 def _make_blogpost_with_languages(en_text='en text', de_text='de text'):
     post = BlogPost.objects.create(name='hello-post')
     en = BlogPostContent.objects.create(post=post, language='en', title='Hello')
@@ -41,7 +62,7 @@ def _make_blogpost_with_languages(en_text='en text', de_text='de text'):
     return post, en, de, en_ph, de_ph
 
 
-class GenericSiblingResolverTests(TestCase):
+class GenericSiblingResolverTests(_BaseTestCase):
     """Step 4 + part of step 7: helper-level coverage of get_default_language_sibling
     for a non-PageContent versionable."""
 
@@ -62,7 +83,7 @@ class GenericSiblingResolverTests(TestCase):
         self.assertEqual(sibling.pk, en.pk)
 
 
-class RendererPlaceholderSwapTests(TestCase):
+class RendererPlaceholderSwapTests(_BaseTestCase):
     """Step 5: the renderer-side resolver swaps a non-default-language
     placeholder for the default-language sibling's same-slot placeholder."""
 
@@ -83,12 +104,42 @@ class RendererPlaceholderSwapTests(TestCase):
         swapped = _resolve_default_placeholder(de_ph)
         self.assertEqual(swapped.pk, de_ph.pk)
 
+    def test_renderer_forces_default_language_when_caller_passes_one(self):
+        """Regression: ContentRenderer.render_placeholder was previously
+        wrapped with *args/**kwargs, so when a caller passed language='de'
+        explicitly (e.g. `{% render_placeholder x language='de' %}`,
+        cms_alias_tags, or a custom view), the swapped en placeholder was
+        rendered while plugins were filtered by 'de' — yielding empty output
+        in real projects, even though the regular `{% placeholder %}` tag
+        worked. This asserts the patch forces language to the default."""
+        from cms.plugin_rendering import ContentRenderer
+        from django.template import Context
+        from django.test import RequestFactory
 
-class EditUrlRedirectTests(TestCase):
+        post, en, de, en_ph, de_ph = _make_blogpost_with_languages(
+            en_text='visible-en', de_text='hidden-de',
+        )
+        request = RequestFactory().get('/de/')
+        request.session = {}
+        request.user = get_user_model()(is_staff=False, is_superuser=False)
+        renderer = ContentRenderer(request=request)
+        context = Context({'request': request})
+
+        # Pass language='de' explicitly — the old code would propagate this
+        # to the original render_placeholder, which would filter the swapped
+        # en placeholder's plugins by language='de' and render nothing.
+        rendered = renderer.render_placeholder(de_ph, context, language='de')
+
+        self.assertIn('visible-en', str(rendered))
+        self.assertNotIn('hidden-de', str(rendered))
+
+
+class EditUrlRedirectTests(_BaseTestCase):
     """Step 6: middleware redirects edit URLs for the de BlogPostContent
     to the equivalent en BlogPostContent URL, preserving the URL prefix."""
 
     def setUp(self):
+        super().setUp()
         self.factory = RequestFactory()
         self.middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
 
@@ -120,7 +171,7 @@ class EditUrlRedirectTests(TestCase):
         self.assertIsNone(response)
 
 
-class PluginLanguageSignalTests(TestCase):
+class PluginLanguageSignalTests(_BaseTestCase):
     """Step 7: pre_save signal pins CMSPlugin.language to the default
     language for ANY content model, not just PageContent."""
 
@@ -140,7 +191,7 @@ class PluginLanguageSignalTests(TestCase):
         self.assertEqual(plugin.language, 'en')
 
 
-class NoteModeltranslationStyleTests(TestCase):
+class NoteModeltranslationStyleTests(_BaseTestCase):
     """Step 9: a model with no `language` field is treated as "single record
     holds all languages". The resolver leaves its placeholders alone; the
     signal pins plugin.language."""
@@ -167,7 +218,7 @@ class NoteModeltranslationStyleTests(TestCase):
         self.assertIsNone(response)
 
 
-class RegionVersionedWithoutLanguageTests(TestCase):
+class RegionVersionedWithoutLanguageTests(_BaseTestCase):
     """Step 10: a versionable whose extra_grouping_fields does NOT contain
     'language' is left alone by the resolver and middleware."""
 
@@ -184,7 +235,7 @@ class RegionVersionedWithoutLanguageTests(TestCase):
         self.assertEqual(swapped.pk, region_ph.pk)
 
 
-class PageContentNoVersioningFallbackTests(TestCase):
+class PageContentNoVersioningFallbackTests(_BaseTestCase):
     """Step 8: when djangocms-versioning is not installed, the helper falls
     back to a page+language filter on PageContent.
 
@@ -223,7 +274,7 @@ class PageContentNoVersioningFallbackTests(TestCase):
 
 
 @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
-class AddonDisabledTests(TestCase):
+class AddonDisabledTests(_BaseTestCase):
     """Sanity check: when the addon is disabled, the resolver leaves
     everything alone for any content model."""
 
@@ -231,3 +282,54 @@ class AddonDisabledTests(TestCase):
         post, en, de, en_ph, de_ph = _make_blogpost_with_languages()
         self.assertEqual(_resolve_default_placeholder(de_ph).pk, de_ph.pk)
         self.assertIsNone(utils.get_default_language_sibling(de))
+
+
+class AppReadyConfigCheckTests(_BaseTestCase):
+    """`GlobalUntranslatedPlaceholderConfig.ready()` raises ImproperlyConfigured
+    when the addon is enabled but the redirect middleware is missing or
+    misordered. When the addon is disabled, the check is skipped."""
+
+    def _app_config(self):
+        return GlobalUntranslatedPlaceholderConfig.create(
+            'djangocms_misc.global_untranslated_placeholder',
+        )
+
+    @override_settings(
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
+        MIDDLEWARE=['cms.middleware.toolbar.ToolbarMiddleware'],
+    )
+    def test_raises_when_addon_enabled_and_middleware_missing(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            self._app_config().ready()
+        self.assertIn(MIDDLEWARE_PATH, str(ctx.exception))
+        self.assertIn('not in MIDDLEWARE', str(ctx.exception))
+
+    @override_settings(
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
+        MIDDLEWARE=[
+            MIDDLEWARE_PATH,
+            TOOLBAR_MIDDLEWARE_PATH,
+        ],
+    )
+    def test_raises_when_redirect_middleware_before_toolbar(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            self._app_config().ready()
+        self.assertIn('must appear AFTER', str(ctx.exception))
+
+    @override_settings(
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None,
+        MIDDLEWARE=[],
+    )
+    def test_does_not_raise_when_addon_disabled(self):
+        # No middleware at all, no setting — should be a no-op.
+        self._app_config().ready()
+
+    @override_settings(
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
+        MIDDLEWARE=[
+            TOOLBAR_MIDDLEWARE_PATH,
+            MIDDLEWARE_PATH,
+        ],
+    )
+    def test_does_not_raise_when_properly_configured(self):
+        self._app_config().ready()

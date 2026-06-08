@@ -26,10 +26,16 @@ def djangocms_misc_placeholder_empty(page_placeholder, slot=None):
         placeholder = page_placeholder
     elif isinstance(page_placeholder, Page):
         page = page_placeholder
-        try:
-            placeholder = page.placeholders.get(slot=slot)
-        except Placeholder.DoesNotExist:
-            pass
+        from cms.models import PageContent
+        from django.utils.translation import get_language
+        page_content = PageContent.admin_manager.filter(
+            page=page, language=get_language(),
+        ).first()
+        if page_content:
+            try:
+                placeholder = page_content.get_placeholders().get(slot=slot)
+            except Placeholder.DoesNotExist:
+                pass
     if placeholder:
         # // return not placeholder.cmsplugin_set.filter(language=get_language()).exists()
         return not placeholder.cmsplugin_set.exists()

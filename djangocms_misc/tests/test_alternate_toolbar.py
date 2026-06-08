@@ -1,13 +1,25 @@
 # -*- coding: utf-8 -*
-from django.contrib.auth.models import User
-# from django.core.urlresolvers import reverse
-from django.test import TestCase, Client, override_settings
 from cms.api import create_page
+from cms.models import PageContent
+from django.contrib.auth.models import User
+from django.db.models.signals import post_save
+from django.test import Client, TestCase, override_settings
+
+
+def _publish(page, language, user):
+    pc = PageContent.admin_manager.filter(page=page, language=language).first()
+    pc.versions.first().publish(user)
 
 
 class AlternateToolbarTests(TestCase):
 
     def setUp(self):
+        # See test_untranslated_placeholders.py for context on the defensive
+        # disconnect of the autopublisher signal.
+        post_save.disconnect(
+            sender=None,
+            dispatch_uid='cms_autopublisher_publish_check_save_plugin_instance',
+        )
         self.client = Client()
         self.user = User.objects.create_superuser(
             username='fred',
@@ -39,10 +51,10 @@ class AlternateToolbarTests(TestCase):
         basic tests. check for some links and if it renders at all
         """
         self.client.login(username='fred', password='test')
-        page = create_page('test', 'base.html', 'en')
-        page.publish('en')
+        page = create_page('test', 'base.html', 'en', created_by=self.user)
+        _publish(page, 'en', self.user)
 
         url = page.get_absolute_url()
         response = self.client.get(url)
-        self.assertRegexpMatches(str(response.content), "\"/en/admin/auth/\"")
-        self.assertRegexpMatches(str(response.content), "\"/en/admin/password_change/\"")
+        self.assertRegex(str(response.content), r'"/en/admin/auth/"')
+        self.assertRegex(str(response.content), r'"/en/admin/password_change/"')

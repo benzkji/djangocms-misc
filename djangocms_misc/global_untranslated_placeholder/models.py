@@ -34,9 +34,9 @@ def _resolve_default_placeholder(placeholder):
     return default_source.placeholders.filter(slot=placeholder.slot).first() or placeholder
 
 
-def _patch_renderer(renderer_cls):
-    original_init = renderer_cls.__init__
-    original_render_placeholder = renderer_cls.render_placeholder
+def _patch_content_renderer():
+    original_init = ContentRenderer.__init__
+    original_render_placeholder = ContentRenderer.render_placeholder
 
     def patched_init(self, request):
         original_init(self, request)
@@ -44,14 +44,47 @@ def _patch_renderer(renderer_cls):
         if default_lang:
             self.request_language = default_lang
 
-    def patched_render_placeholder(self, placeholder, *args, **kwargs):
-        if get_untranslated_default_language_if_enabled():
+    def patched_render_placeholder(self, placeholder, context, language=None, page=None,
+                                   editable=False, use_cache=False, nodelist=None,
+                                   width=None):
+        default_lang = get_untranslated_default_language_if_enabled()
+        if default_lang:
             placeholder = _resolve_default_placeholder(placeholder)
-        return original_render_placeholder(self, placeholder, *args, **kwargs)
+            # Force the language even when the caller passed one explicitly
+            # (e.g. {% render_placeholder foo language=... %}, apphook views,
+            # cms_alias_tags). The swapped placeholder's plugins live under
+            # the default language; filtering by anything else returns empty.
+            language = default_lang
 
-    renderer_cls.__init__ = patched_init
-    renderer_cls.render_placeholder = patched_render_placeholder
+        return original_render_placeholder(
+            self, placeholder, context, language=language, page=page,
+            editable=editable, use_cache=use_cache, nodelist=nodelist, width=width,
+        )
+
+    ContentRenderer.__init__ = patched_init
+    ContentRenderer.render_placeholder = patched_render_placeholder
 
 
-_patch_renderer(ContentRenderer)
-_patch_renderer(StructureRenderer)
+def _patch_structure_renderer():
+    original_init = StructureRenderer.__init__
+    original_render_placeholder = StructureRenderer.render_placeholder
+
+    def patched_init(self, request):
+        original_init(self, request)
+        default_lang = get_untranslated_default_language_if_enabled()
+        if default_lang:
+            self.request_language = default_lang
+
+    def patched_render_placeholder(self, placeholder, language, page=None):
+        default_lang = get_untranslated_default_language_if_enabled()
+        if default_lang:
+            placeholder = _resolve_default_placeholder(placeholder)
+            language = default_lang
+        return original_render_placeholder(self, placeholder, language, page=page)
+
+    StructureRenderer.__init__ = patched_init
+    StructureRenderer.render_placeholder = patched_render_placeholder
+
+
+_patch_content_renderer()
+_patch_structure_renderer()
