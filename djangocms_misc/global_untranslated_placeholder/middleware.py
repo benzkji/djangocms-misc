@@ -2,14 +2,29 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import HttpResponseRedirect
 
-from .utils import get_default_language_sibling, get_untranslated_default_language_if_enabled
+from .utils import (
+    get_default_language_editable_sibling,
+    get_default_language_sibling,
+    get_untranslated_default_language_if_enabled,
+)
 
 
-EDIT_URL_NAMES = {
+# URL names that trigger an auto-create-draft redirect (the editor needs an
+# editable target). When the default-language sibling has only a PUBLISHED
+# version, a DRAFT is created from it before redirecting.
+EDITABLE_URL_NAMES = {
     'cms_placeholder_render_object_edit',
     'cms_placeholder_render_object_structure',
+}
+
+# Preview is read-only. We still redirect to the default-language sibling
+# when one exists with the matching state, but we never auto-create drafts
+# as a side effect of viewing a preview URL.
+PREVIEW_URL_NAMES = {
     'cms_placeholder_render_object_preview',
 }
+
+EDIT_URL_NAMES = EDITABLE_URL_NAMES | PREVIEW_URL_NAMES
 
 
 class EditModeDefaultLanguageMiddleware:
@@ -67,7 +82,10 @@ class EditModeDefaultLanguageMiddleware:
         if current.language == default_lang:
             return None
 
-        default_obj = get_default_language_sibling(current, mirror_state_from=current)
+        if resolver_match.url_name in EDITABLE_URL_NAMES:
+            default_obj = get_default_language_editable_sibling(current, request.user)
+        else:
+            default_obj = get_default_language_sibling(current, mirror_state_from=current)
         if default_obj is None or default_obj.pk == current.pk:
             return None
 

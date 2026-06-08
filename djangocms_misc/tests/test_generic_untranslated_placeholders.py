@@ -51,10 +51,30 @@ class _BaseTestCase(TestCase):
         super().setUp()
 
 
+def _make_user(username='tester'):
+    return get_user_model().objects.create_superuser(
+        username=username, email=f'{username}@example.com', password='pw',
+    )
+
+
+def _make_blogpost_content(post, language, title, user, state=None):
+    """Create a BlogPostContent and its associated DRAFT Version (or the
+    given state, by publishing first)."""
+    from djangocms_versioning import constants as v_const
+    from djangocms_versioning.models import Version
+
+    content = BlogPostContent.objects.create(post=post, language=language, title=title)
+    version = Version.objects.create(content=content, created_by=user)
+    if state == v_const.PUBLISHED:
+        version.publish(user)
+    return content
+
+
 def _make_blogpost_with_languages(en_text='en text', de_text='de text'):
+    user = _make_user()
     post = BlogPost.objects.create(name='hello-post')
-    en = BlogPostContent.objects.create(post=post, language='en', title='Hello')
-    de = BlogPostContent.objects.create(post=post, language='de', title='Hallo')
+    en = _make_blogpost_content(post, 'en', 'Hello', user)
+    de = _make_blogpost_content(post, 'de', 'Hallo', user)
     en_ph = get_placeholder_from_slot(en.placeholders, 'content')
     de_ph = get_placeholder_from_slot(de.placeholders, 'content')
     add_plugin(en_ph, TestPlugin, 'en', field1=en_text)
@@ -142,10 +162,15 @@ class EditUrlRedirectTests(_BaseTestCase):
         super().setUp()
         self.factory = RequestFactory()
         self.middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
+        self.user = get_user_model().objects.create_superuser(
+            username='editor', email='e@e.com', password='pw',
+        )
 
-    def _process(self, request, ct_id, obj_id):
-        match = mock.Mock(url_name='cms_placeholder_render_object_edit')
+    def _process(self, request, ct_id, obj_id,
+                 url_name='cms_placeholder_render_object_edit'):
+        match = mock.Mock(url_name=url_name)
         request.resolver_match = match
+        request.user = self.user
         return self.middleware.process_view(request, None, (str(ct_id), str(obj_id)), {})
 
     def test_de_blogpost_redirects_to_en_blogpost(self):
@@ -169,6 +194,252 @@ class EditUrlRedirectTests(_BaseTestCase):
         request = self.factory.get(path)
         response = self._process(request, ct_id, en.pk)
         self.assertIsNone(response)
+
+
+class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
+    """When the default-language sibling has only a PUBLISHED Version (no
+    DRAFT), the middleware/helper must NOT redirect onto the immutable
+    published content. Instead, mirror djangocms-versioning's "New Draft"
+    button: auto-create a DRAFT via Version.copy(user) and redirect to it."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
+        self.user = get_user_model().objects.create_superuser(
+            username='editor', email='e@e.com', password='pw',
+        )
+
+    def _make_post_with_published_en_and_draft_de(self):
+        """Returns (post, published_en_pc, de_pc) where en has only a
+        PUBLISHED Version and de has only a DRAFT Version."""
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='auto-draft-post')
+        en = _make_blogpost_content(post, 'en', 'Hello', self.user,
+                                    state=v_const.PUBLISHED)
+        de = _make_blogpost_content(post, 'de', 'Hallo', self.user)
+        return post, en, de
+
+    def test_helper_returns_existing_draft_without_creating_new_version(self):
+        from djangocms_versioning.models import Version
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        before = Version.objects.count()
+
+        sibling = utils.get_default_language_editable_sibling(de, self.user)
+
+        self.assertIsNotNone(sibling)
+        self.assertEqual(sibling.pk, en.pk)
+        self.assertEqual(Version.objects.count(), before)
+
+    def test_helper_auto_creates_draft_when_only_published_exists(self):
+        from django.contrib.contenttypes.models import ContentType
+        from djangocms_versioning import constants as v_const
+        from djangocms_versioning.models import Version
+        post, published_en, de = self._make_post_with_published_en_and_draft_de()
+        ct = ContentType.objects.get_for_model(BlogPostContent)
+        # Use _base_manager because BlogPostContent.objects filters to
+        # PUBLISHED only (djangocms-versioning's PublishedContentManagerMixin).
+        en_pks_before = list(BlogPostContent._base_manager.filter(
+            post=post, language='en',
+        ).values_list('pk', flat=True))
+        en_versions_before = Version.objects.filter(
+            content_type=ct, object_id__in=en_pks_before,
+        ).count()
+        self.assertEqual(en_versions_before, 1)
+
+        sibling = utils.get_default_language_editable_sibling(de, self.user)
+
+        # The returned sibling is a brand new DRAFT content row, not the
+        # PUBLISHED one (which would be uneditable).
+        self.assertIsNotNone(sibling)
+        self.assertNotEqual(sibling.pk, published_en.pk)
+        self.assertEqual(sibling.language, 'en')
+        # A new DRAFT Version was created for the en grouper.
+        en_pks_after = list(BlogPostContent._base_manager.filter(
+            post=post, language='en',
+        ).values_list('pk', flat=True))
+        en_drafts_after = Version.objects.filter(
+            content_type=ct, object_id__in=en_pks_after, state=v_const.DRAFT,
+        )
+        self.assertEqual(en_drafts_after.count(), 1)
+        self.assertEqual(en_drafts_after.first().object_id, sibling.pk)
+
+    def test_middleware_redirects_to_auto_created_draft(self):
+        post, published_en, de = self._make_post_with_published_en_and_draft_de()
+        ct_id = ContentType.objects.get_for_model(BlogPostContent).id
+        path = f'/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/'
+        request = self.factory.get(path)
+        request.user = self.user
+        match = mock.Mock(url_name='cms_placeholder_render_object_edit')
+        request.resolver_match = match
+
+        response = self.middleware.process_view(
+            request, None, (str(ct_id), str(de.pk)), {},
+        )
+
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 302)
+        # Redirect target: same URL prefix and content type, but a new
+        # object_id — neither de nor the published en.
+        self.assertTrue(response['Location'].startswith(
+            f'/de/admin/cms/placeholder/object/{ct_id}/edit/'
+        ))
+        new_pk_str = response['Location'].rstrip('/').rsplit('/', 1)[-1]
+        new_pk = int(new_pk_str)
+        self.assertNotEqual(new_pk, de.pk)
+        self.assertNotEqual(new_pk, published_en.pk)
+        # The new pk corresponds to the auto-created DRAFT. Use _base_manager
+        # because the default manager filters to PUBLISHED only under
+        # djangocms-versioning.
+        new_content = BlogPostContent._base_manager.get(pk=new_pk)
+        self.assertEqual(new_content.language, 'en')
+
+    def test_preview_url_does_not_auto_create_draft(self):
+        """Preview is read-only — viewing a preview URL must NOT have the
+        side effect of creating a new DRAFT Version."""
+        from djangocms_versioning.models import Version
+        post, published_en, de = self._make_post_with_published_en_and_draft_de()
+        versions_before = Version.objects.count()
+        ct_id = ContentType.objects.get_for_model(BlogPostContent).id
+        path = f'/de/admin/cms/placeholder/object/{ct_id}/preview/{de.pk}/'
+        request = self.factory.get(path)
+        request.user = self.user
+        match = mock.Mock(url_name='cms_placeholder_render_object_preview')
+        request.resolver_match = match
+
+        self.middleware.process_view(
+            request, None, (str(ct_id), str(de.pk)), {},
+        )
+
+        self.assertEqual(Version.objects.count(), versions_before)
+
+
+class CascadePublishLanguageSiblingsTests(_BaseTestCase):
+    """When any language sibling is published, also publish other-language
+    siblings that have BOTH a DRAFT and an existing PUBLISHED Version."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_superuser(
+            username='publisher', email='p@p.com', password='pw',
+        )
+        # Inject the current user into CMS's thread-local; that's the
+        # mechanism through which the cascade signal handler picks up the
+        # publishing user (the same one CurrentUserMiddleware would set).
+        from cms.utils.permissions import set_current_user
+        set_current_user(self.user)
+
+    def tearDown(self):
+        from cms.utils.permissions import set_current_user
+        set_current_user(None)
+        super().tearDown()
+
+    def _make_draft(self, post, language, title):
+        from djangocms_versioning.models import Version
+        content = BlogPostContent.objects.create(
+            post=post, language=language, title=title,
+        )
+        return Version.objects.create(content=content, created_by=self.user)
+
+    def _publish_then_redraft(self, post, language, title):
+        """Create + publish a sibling, then create a new DRAFT on top.
+        Returns (published_version, new_draft_version)."""
+        published = self._make_draft(post, language, title)
+        published.publish(self.user)
+        # Create a separate draft for the same grouper+language
+        new_draft = self._make_draft(post, language, title + ' v2')
+        return published, new_draft
+
+    def _state_of(self, version):
+        # FSM fields don't allow refresh_from_db setattr; re-fetch instead.
+        from djangocms_versioning.models import Version
+        return Version.objects.get(pk=version.pk).state
+
+    def test_cascades_to_sibling_with_draft_and_published(self):
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='cascade-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        en_draft.publish(self.user)
+
+        # de DRAFT should now be PUBLISHED (cascade).
+        self.assertEqual(self._state_of(de_draft), v_const.PUBLISHED)
+        # The original de PUBLISHED gets UNPUBLISHED (versioning's normal
+        # flow when a new version of the same grouping gets published).
+        self.assertEqual(self._state_of(de_published), v_const.UNPUBLISHED)
+
+    def test_does_not_cascade_to_sibling_with_only_draft(self):
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='no-published-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        # de has only a DRAFT — never published.
+        de_draft = self._make_draft(post, 'de', 'Hallo')
+        self.assertEqual(self._state_of(de_draft), v_const.DRAFT)
+
+        en_draft.publish(self.user)
+
+        # de DRAFT must remain DRAFT — the "existing PUBLISHED required"
+        # gate prevents silently making /de/ reachable for the first time.
+        self.assertEqual(self._state_of(de_draft), v_const.DRAFT)
+
+    def test_does_not_cascade_to_sibling_with_no_draft(self):
+        from djangocms_versioning import constants as v_const
+        from djangocms_versioning.models import Version
+        post = BlogPost.objects.create(name='no-draft-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        # de is published but has no pending DRAFT.
+        de_published_version = self._make_draft(post, 'de', 'Hallo')
+        de_published_version.publish(self.user)
+
+        version_count_before = Version.objects.count()
+        en_draft.publish(self.user)
+
+        # Nothing new created for de; de PUBLISHED untouched.
+        self.assertEqual(Version.objects.count(), version_count_before)
+        self.assertEqual(self._state_of(de_published_version), v_const.PUBLISHED)
+
+    def test_cascade_is_symmetric(self):
+        """Publishing a non-default language also cascades."""
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='symmetric-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        de_draft.publish(self.user)
+
+        # en DRAFT should now be PUBLISHED too.
+        self.assertEqual(self._state_of(en_draft), v_const.PUBLISHED)
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_no_cascade_when_addon_disabled(self):
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='disabled-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        en_draft.publish(self.user)
+
+        self.assertEqual(self._state_of(de_draft), v_const.DRAFT)
+
+    def test_reentrance_guard_no_infinite_loop(self):
+        """Three siblings each with DRAFT+PUBLISHED. Publishing one must
+        cascade to the others exactly once — the re-entrance guard
+        prevents the cascaded publishes from re-firing the cascade."""
+        from djangocms_versioning import constants as v_const
+        post = BlogPost.objects.create(name='reentrance-post')
+        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+        fr_published, fr_draft = self._publish_then_redraft(post, 'fr', 'Bonjour')
+
+        en_draft.publish(self.user)
+
+        # de DRAFT → PUBLISHED, fr DRAFT → PUBLISHED — each exactly once.
+        self.assertEqual(self._state_of(de_draft), v_const.PUBLISHED)
+        self.assertEqual(self._state_of(fr_draft), v_const.PUBLISHED)
+        # And each language's previously-PUBLISHED is now UNPUBLISHED.
+        self.assertEqual(self._state_of(de_published), v_const.UNPUBLISHED)
+        self.assertEqual(self._state_of(fr_published), v_const.UNPUBLISHED)
 
 
 class PluginLanguageSignalTests(_BaseTestCase):

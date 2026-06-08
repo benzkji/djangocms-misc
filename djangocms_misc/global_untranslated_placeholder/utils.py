@@ -91,3 +91,127 @@ def get_default_language_sibling(content, mirror_state_from=None):
         ).first()
 
     return None
+
+
+def get_default_language_editable_sibling(content, user):
+    """
+    Return a default-language sibling content object that is safe for the
+    given user to edit.
+
+    Unlike :func:`get_default_language_sibling`, this never returns a
+    PUBLISHED versioned object. If the only default-language version is
+    PUBLISHED, a brand new DRAFT is created via ``Version.copy(user)`` —
+    the same code path the CMS toolbar's "New Draft" button uses — and the
+    new DRAFT's content is returned.
+
+    Used by the edit/structure-mode redirect middleware. Returns None when:
+      - the addon is disabled,
+      - no default-language sibling exists,
+      - the user lacks permission to create a draft, or the existing draft
+        is locked by another user.
+    """
+    default_lang = get_untranslated_default_language_if_enabled()
+    if not default_lang or content is None:
+        return None
+
+    versionable = get_versionable_for(content)
+    if versionable is not None and 'language' in versionable.extra_grouping_fields:
+        from djangocms_versioning import constants as versioning_constants
+        from djangocms_versioning.models import Version
+
+        grouping = versionable.grouping_values(content)
+        grouping['language'] = default_lang
+        base_qs = type(content)._base_manager.filter(**grouping)
+
+        # Prefer an existing DRAFT default-language sibling.
+        draft = base_qs.filter(versions__state=versioning_constants.DRAFT).first()
+        if draft is not None:
+            return draft
+
+        # Otherwise find the PUBLISHED default-language sibling and copy it
+        # to a new DRAFT.
+        published = base_qs.filter(versions__state=versioning_constants.PUBLISHED).first()
+        if published is None:
+            return None
+        try:
+            published_version = Version.objects.get_for_content(published)
+        except Version.DoesNotExist:
+            return None
+        try:
+            published_version.check_edit_redirect(user)
+        except Exception:
+            # ConditionFailed: locked by another user, missing permission,
+            # or anon user. Caller will fall through to no-redirect.
+            return None
+        new_draft_version = published_version.copy(user)
+        return new_draft_version.content
+
+    from cms.models import PageContent
+    if isinstance(content, PageContent):
+        return PageContent._base_manager.filter(
+            page=content.page, language=default_lang,
+        ).first()
+
+    return None
+
+
+def iter_cascade_targets(content):
+    """
+    Yield ``(sibling_language, draft_version)`` tuples for every
+    other-language sibling of ``content`` that has BOTH a DRAFT
+    Version and an existing PUBLISHED Version for the same grouper.
+
+    Yields nothing when:
+      - the addon is disabled,
+      - versioning is not installed or the content model is not registered
+        as a versionable,
+      - the versionable's ``extra_grouping_fields`` does not include
+        ``"language"``.
+
+    The "existing PUBLISHED required" gate ensures the cascade never
+    silently makes a brand-new language reachable — it only keeps already-
+    -published languages in sync.
+    """
+    if not get_untranslated_default_language_if_enabled() or content is None:
+        return
+
+    versionable = get_versionable_for(content)
+    if versionable is None or 'language' not in versionable.extra_grouping_fields:
+        return
+
+    from django.contrib.contenttypes.models import ContentType
+    from djangocms_versioning import constants as versioning_constants
+    from djangocms_versioning.models import Version
+
+    grouping = versionable.grouping_values(content)
+    own_language = grouping.pop('language')
+    grouper_qs = versionable.for_grouping_values(**grouping)
+
+    other_languages = (
+        grouper_qs.exclude(language=own_language)
+        .values_list('language', flat=True)
+        .distinct()
+    )
+    content_type = ContentType.objects.get_for_model(type(content))
+
+    for sibling_language in other_languages:
+        sibling_pks = list(
+            grouper_qs.filter(language=sibling_language).values_list('pk', flat=True)
+        )
+        if not sibling_pks:
+            continue
+        has_published = Version.objects.filter(
+            content_type=content_type,
+            object_id__in=sibling_pks,
+            state=versioning_constants.PUBLISHED,
+        ).exists()
+        if not has_published:
+            continue
+        draft = Version.objects.filter(
+            content_type=content_type,
+            object_id__in=sibling_pks,
+            state=versioning_constants.DRAFT,
+        ).first()
+        if draft is None:
+            continue
+        yield sibling_language, draft
