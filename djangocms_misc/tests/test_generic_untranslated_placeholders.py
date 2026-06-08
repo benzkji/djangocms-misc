@@ -555,6 +555,112 @@ class AddonDisabledTests(_BaseTestCase):
         self.assertIsNone(utils.get_default_language_sibling(de))
 
 
+class ToolbarUrlHelperLanguagePriorityTests(_BaseTestCase):
+    """Regression: cms.toolbar.utils.get_object_{edit,preview,structure}_url
+    have ``language = getattr(obj, "language", language)  # Object trumps
+    parameter``, so even when CMSToolbar passes ``language=request_language``,
+    the URL is reversed under ``force_language(obj.language)`` and the
+    prefix becomes ``/<obj.language>/``.
+
+    In our addon's flow the editor is on ``/de/`` editing the default-language
+    sibling (an en PageContent). After a plugin save the structure board
+    reloads via ``cms_edit_url`` exposed in the toolbar context — without
+    this patch, it lands on ``/en/admin/.../edit/<en_pk>/`` and the entire
+    admin flips to English. The patch in models.py rewrites the URL's
+    leading language segment to honour the explicit ``language`` parameter
+    so the editor stays on ``/de/``."""
+
+    def test_edit_url_honours_explicit_language_parameter(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # en.language == 'en'; explicit request for 'de' must win.
+        url = toolbar_utils.get_object_edit_url(en, language='de')
+        self.assertTrue(url.startswith('/de/'),
+                        f'expected /de/ prefix, got {url!r}')
+        # The object_id portion still references the en object.
+        self.assertIn(f'/edit/{en.pk}/', url)
+
+    def test_preview_url_honours_explicit_language_parameter(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        url = toolbar_utils.get_object_preview_url(en, language='de')
+        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+
+    def test_structure_url_honours_explicit_language_parameter(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        url = toolbar_utils.get_object_structure_url(en, language='de')
+        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+
+    def test_unaltered_when_language_matches_object(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Explicit language matches obj.language => unchanged.
+        url = toolbar_utils.get_object_edit_url(en, language='en')
+        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+
+    def test_unaltered_when_no_language_parameter(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # No language parameter => original CMS behavior (obj.language wins).
+        url = toolbar_utils.get_object_edit_url(en)
+        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_unaltered_when_addon_disabled(self):
+        from cms.toolbar import utils as toolbar_utils
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Addon off => CMS's "object trumps parameter" rule applies unchanged.
+        url = toolbar_utils.get_object_edit_url(en, language='de')
+        self.assertTrue(url.startswith('/en/'),
+                        f'expected unpatched /en/ behaviour, got {url!r}')
+
+
+class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
+    """Regression: djangocms-versioning's publish_view redirects to
+    ``get_preview_url(version.content)``. That helper, when no explicit
+    ``language`` is passed, falls back to ``content_obj.language`` — which
+    in our addon's flow is always the default (en). The CMS-side patch
+    on ``get_object_preview_url`` then sees a matching ``language ==
+    obj.language`` and skips the URL rewrite. End result: editor publishes
+    from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
+
+    This patch makes versioning's ``get_preview_url`` use the current
+    request language (via ``django.utils.translation.get_language()``,
+    set by LocaleMiddleware) when no explicit language is given."""
+
+    def test_get_preview_url_uses_request_language_when_no_arg(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Simulate the user being on /de/: LocaleMiddleware activates 'de'.
+        with override('de'):
+            url = versioning_helpers.get_preview_url(en)
+        self.assertTrue(url.startswith('/de/'),
+                        f'expected /de/ prefix from active language, got {url!r}')
+        self.assertIn(f'/preview/{en.pk}/', url)
+
+    def test_get_preview_url_respects_explicit_language(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Explicit language wins over the active one.
+        with override('en'):
+            url = versioning_helpers.get_preview_url(en, language='de')
+        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_get_preview_url_unaltered_when_addon_disabled(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Addon off -> versioning's original behaviour: content.language wins.
+        with override('de'):
+            url = versioning_helpers.get_preview_url(en)
+        self.assertTrue(url.startswith('/en/'),
+                        f'expected unpatched /en/ behaviour, got {url!r}')
+
+
 class AppReadyConfigCheckTests(_BaseTestCase):
     """`GlobalUntranslatedPlaceholderConfig.ready()` raises ImproperlyConfigured
     when the addon is enabled but the redirect middleware is missing or

@@ -57,6 +57,8 @@ it's pointed at the **default-language content**. Concretely:
 | Editing on `/de/<page>/?edit` | URL is rewritten to the en object id; the editor edits the en placeholders directly. |
 | Edit URL when only en PUBLISHED exists | A new en DRAFT is auto-created via `Version.copy(user)` (same code path as the toolbar's "New Draft" button), and the editor lands on the new draft. |
 | Programmatic `cms.api.add_plugin(de_placeholder, ..., language='de')` | The plugin's `language` is force-pinned to `en` by a `pre_save` signal (defense in depth). |
+| Plugin save reload | The structure board's post-save reload of the page (via `cms_edit_url` in the toolbar context) stays on the editor's chosen URL prefix (`/de/`) — does not flip the admin to `/en/`. |
+| Publish redirect | After a successful publish from `/de/`, djangocms-versioning's `publish_view` redirects to the preview URL of the now-published content. Without the patch, that URL is built from `content_obj.language='en'` and the editor lands on `/en/.../preview/<en_pk>/`. With the patch, the redirect target keeps the editor's `/de/` prefix. |
 | Publishing the en content | Every other-language `PageContent` for the same page that has BOTH a DRAFT and an existing PUBLISHED Version is also published. New-but-unpublished languages are left alone. |
 
 The addon generalizes beyond `PageContent` to **any** content model registered
@@ -94,11 +96,61 @@ Patches `cms.plugin_rendering.ContentRenderer` and `StructureRenderer` so:
   explicitly forced to the default, even when a caller passes it positionally
   or by keyword (e.g. `{% render_placeholder x language='de' %}`,
   `cms_alias_tags`, apphook views).
+- After the language is forced, `placeholder._plugins_cache` and
+  `placeholder._all_plugins_cache` are dropped if present. Required for
+  cms 4.1.11+, where `render_page_placeholder` preloads plugins with
+  `get_language()` (the request language) and caches an empty plugin list
+  on the default-language placeholder before the renderer swap runs — the
+  language override alone can't un-poison the cache.
 
 Resolution: `_resolve_default_placeholder(placeholder)` reads
 `placeholder.source` (the content object via `GenericForeignKey`), checks for
 a `language` field, and looks up the default-language sibling. On match,
 returns the sibling's same-slot `Placeholder`; on miss, returns the original.
+
+Also in `models.py`: `_patch_toolbar_url_helpers()` wraps
+`cms.toolbar.utils.get_object_{edit,preview,structure}_url`. The original
+helpers have the rule `language = getattr(obj, "language", language)
+# Object trumps parameter`, so even when `CMSToolbar` passes
+`language=self.request_language`, the URL is reversed under
+`force_language(obj.language)` and the prefix becomes `/<obj.language>/`.
+With the addon enabled, an editor on `/de/` editing the default-language
+sibling (an en PageContent) would see the structure board post-save
+reload (via `cms_edit_url` in the toolbar context) land on `/en/`,
+flipping the entire admin into English mid-edit. The patch calls the
+original to keep all other concerns (live-url querystring, language-
+list validation) and then post-processes the returned URL, replacing
+the leading `/<obj.language>/` segment with `/<language>/` when the
+caller asked for a specific language that differs from `obj.language`.
+Gated on the addon being enabled, so non-untranslated projects are
+unaffected.
+
+Because `cms.toolbar.toolbar` does `from cms.toolbar.utils import
+get_object_edit_url, ...` at module load (binding the originals locally),
+`apps.py` connects a one-shot `request_started` signal handler that
+rebinds those module-level names to the patched versions on the first
+request. The rebind is deferred to first-request because
+`cms.toolbar.toolbar`'s import-time code reads
+`apps.get_app_config('cms').cms_extension.toolbar_mixins`, which isn't
+populated until `cms.ready()` runs — and the addon's `ready()` runs
+first when our app is listed before `cms` in `INSTALLED_APPS`.
+
+`_patch_versioning_get_preview_url()` (only active when
+`djangocms-versioning` is installed) covers the post-publish redirect
+path. `djangocms_versioning.admin.publish_view` redirects to
+`djangocms_versioning.helpers.get_preview_url(version.content)` after
+publishing. The helper, when no explicit `language` is given, falls
+back to `getattr(content_obj, "language", get_language())` — so under
+our addon, where `content_obj` is always the default-language sibling,
+it always picks `'en'` and propagates to the CMS-side helper as a
+matching `language=='en'` (which skips the toolbar-URL rewrite above).
+The patch flips the default: when no `language` is passed AND the
+addon is enabled, use `django.utils.translation.get_language()` (the
+request language activated by `LocaleMiddleware`). The CMS-side patch
+then rewrites the URL's prefix from `/en/` to `/de/`. Both
+`djangocms_versioning.helpers.get_preview_url` and
+`djangocms_versioning.admin.get_preview_url` (which `admin.py` imports
+by name) are rebound.
 
 ### 2. `middleware.py` — edit-mode URL redirect
 
@@ -155,12 +207,20 @@ on each yielded sibling. Constraints:
 
 The receiver is only connected when `djangocms_versioning` is installed.
 
-### 4. `apps.py` — startup configuration check
+### 4. `apps.py` — startup configuration check + deferred rebind
 
-`GlobalUntranslatedPlaceholderConfig.ready()` raises `ImproperlyConfigured`
-when the addon is enabled but `EditModeDefaultLanguageMiddleware` is missing
-from `MIDDLEWARE`, or when it appears **before**
-`cms.middleware.toolbar.ToolbarMiddleware`. Skipped when the addon is off.
+`GlobalUntranslatedPlaceholderConfig.ready()`:
+
+- Connects a one-shot `request_started` signal that rebinds
+  `cms.toolbar.toolbar`'s local references to the patched
+  `get_object_edit_url` / `get_object_preview_url` /
+  `get_object_structure_url`. Deferred because `cms.toolbar.toolbar`'s
+  module-level code reads `apps.get_app_config('cms').cms_extension`,
+  which isn't populated until `cms.ready()` runs.
+- Raises `ImproperlyConfigured` when the addon is enabled but
+  `EditModeDefaultLanguageMiddleware` is missing from `MIDDLEWARE`,
+  or when it appears **before** `cms.middleware.toolbar.ToolbarMiddleware`.
+  Skipped when the addon is off.
 
 ---
 
@@ -266,6 +326,26 @@ sync with the default language's publish cycle.
   consumers like `django-modeltranslation` read to pick the right
   translation tab. Using `reverse()` (which would re-prefix the URL with
   `/en/`) is deliberately avoided.
+- **URL prefix preservation in the structure board reload.** After a
+  plugin save, the structure board reloads the page via `cms_edit_url`
+  computed by `CMSToolbar.get_object_edit_url()`. Without the toolbar
+  URL helper patch (see `models.py:_patch_toolbar_url_helpers`), the
+  CMS rule `language = getattr(obj, "language", language)  # Object
+  trumps parameter` forces the reload onto `/en/<...>` because the
+  edited object is the en default-language sibling — silently flipping
+  the editor into the English admin mid-session. The patch rewrites
+  the URL's leading language segment to match the explicitly-requested
+  language so the editor stays on `/de/`.
+- **URL prefix preservation in the publish redirect.** djangocms-
+  versioning's `publish_view` redirects to
+  `get_preview_url(version.content)` after a successful publish. That
+  helper defaults to `content_obj.language` (always en under the
+  addon), which the CMS-side patch can't catch because the language
+  matches `obj.language`. The
+  `_patch_versioning_get_preview_url()` patch makes the helper use
+  the request language (`django.utils.translation.get_language()`)
+  when no explicit language is given, so the redirect target keeps
+  the editor's URL prefix.
 - **No live data mutation.** The editable-sibling lookup never returns
   a PUBLISHED content. CMS's own check `object_is_editable()` would
   redirect a PUBLISHED edit to a read-only preview; auto-create-draft

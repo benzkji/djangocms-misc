@@ -1,4 +1,5 @@
 from cms.plugin_rendering import ContentRenderer, StructureRenderer
+from cms.toolbar import utils as toolbar_utils
 
 from .conf import UntranslatedPlaceholderConf  # noqa: F401  load AppConf at startup
 from .signals import *  # noqa: F401,F403  wire up signal receivers at startup
@@ -104,5 +105,111 @@ def _patch_structure_renderer():
     StructureRenderer.render_placeholder = patched_render_placeholder
 
 
+def _patch_toolbar_url_helpers():
+    """
+    cms.toolbar.utils.get_object_{edit,preview,structure}_url have a hard
+    rule: ``language = getattr(obj, "language", language)  # Object trumps
+    parameter``. So even though CMSToolbar passes ``language=self.request_
+    language``, the URL is reversed under ``force_language(obj.language)``
+    and the prefix becomes ``/<obj.language>/``.
+
+    For the addon this is wrong: an editor on ``/de/`` editing the
+    default-language sibling sees the structure board reload (via
+    ``cms_edit_url`` in the toolbar context) land on ``/en/`` after a
+    plugin save, dragging the entire admin out of the user's selected
+    language. Worse, downstream ``cms_path`` queries on plugin-edit
+    URLs then carry ``/en/`` too, breaking django-modeltranslation's
+    language-tab logic.
+
+    Wrap each helper: call the original to keep all of its concerns
+    (live-url querystring, language list validation), then when our
+    addon is enabled and the caller asked for a specific language
+    that differs from the object's, rewrite the URL's leading language
+    segment to match the requested language. This is gated on the
+    addon so non-untranslated projects are unaffected.
+    """
+    from cms.utils.i18n import get_language_list
+
+    def _patched(original):
+        def wrapper(obj, language=None):
+            url = original(obj, language=language)
+            if not get_untranslated_default_language_if_enabled():
+                return url
+            if language is None:
+                return url
+            obj_lang = getattr(obj, 'language', None)
+            if obj_lang is None or obj_lang == language:
+                return url
+            if language not in get_language_list():
+                return url
+            old_prefix = f'/{obj_lang}/'
+            new_prefix = f'/{language}/'
+            if url.startswith(old_prefix):
+                return new_prefix + url[len(old_prefix):]
+            return url
+        return wrapper
+
+    toolbar_utils.get_object_edit_url = _patched(toolbar_utils.get_object_edit_url)
+    toolbar_utils.get_object_preview_url = _patched(toolbar_utils.get_object_preview_url)
+    toolbar_utils.get_object_structure_url = _patched(toolbar_utils.get_object_structure_url)
+    # cms.toolbar.toolbar imports these helpers by name (line 21 of
+    # toolbar.py: ``from cms.toolbar.utils import get_object_edit_url, ...``)
+    # so rebind them once that module is imported too. We can't import it
+    # at addon load time because toolbar.toolbar's module-level code reads
+    # ``apps.get_app_config('cms').cms_extension`` which isn't populated
+    # until CMS app autodiscovery finishes. Defer via AppConfig.ready()
+    # in apps.py.
+
+
+def _patch_versioning_get_preview_url():
+    """
+    djangocms_versioning.admin.publish_view (and related views) redirect to
+    ``djangocms_versioning.helpers.get_preview_url(version.content)`` after
+    a successful publish. That helper, when no explicit ``language`` arg is
+    given, falls back to ``content_obj.language`` — which under our addon
+    is always the default language ('en'), because the editor was redirected
+    onto the default-language sibling. The CMS-side patch above can't catch
+    it because the call into ``get_object_preview_url`` passes the matching
+    ``language=content_obj.language``, so its "rewrite when caller's language
+    differs from obj.language" branch is skipped. The editor finishes
+    publishing from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
+
+    Patch the versioning helper: when the addon is enabled and no language
+    was explicitly passed, use the currently active request language (set by
+    LocaleMiddleware from the URL prefix) instead of the content's language.
+    Falls back cleanly to the original behaviour when the addon is off or
+    djangocms-versioning is not installed.
+    """
+    if not apps.is_installed('djangocms_versioning'):
+        return
+    from djangocms_versioning import helpers as versioning_helpers
+    from django.utils.translation import get_language
+
+    original = versioning_helpers.get_preview_url
+
+    def patched_get_preview_url(content_obj, language=None):
+        if (
+            language is None
+            and get_untranslated_default_language_if_enabled()
+        ):
+            request_language = get_language()
+            if request_language:
+                language = request_language
+        return original(content_obj, language=language)
+
+    versioning_helpers.get_preview_url = patched_get_preview_url
+    # djangocms_versioning.admin imports get_preview_url by name; rebind
+    # the local reference there too so publish_view picks up the patch.
+    # We don't need the deferred-import dance the toolbar patch needs
+    # because djangocms_versioning.admin's module-level code is safe to
+    # import at addon load time (no cms_extension access).
+    from djangocms_versioning import admin as versioning_admin
+    versioning_admin.get_preview_url = patched_get_preview_url
+
+
+from django.apps import apps  # noqa: E402  (need this for the optional patch)
+
 _patch_content_renderer()
 _patch_structure_renderer()
+_patch_toolbar_url_helpers()
+_patch_versioning_get_preview_url()
