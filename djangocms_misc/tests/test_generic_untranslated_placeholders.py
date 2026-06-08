@@ -661,6 +661,50 @@ class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
                         f'expected unpatched /en/ behaviour, got {url!r}')
 
 
+class VersioningGetEditableUrlPatchTests(_BaseTestCase):
+    """Regression: djangocms-versioning's ``edit_redirect_view`` (after
+    creating a new draft) redirects to
+    ``djangocms_versioning.helpers.get_editable_url(target.content)``.
+    The original always uses ``getattr(content_obj, "language", None)`` —
+    always the default (en) under our addon, so the resulting URL has
+    ``/en/`` prefix. After "Neuer Entwurf" on a /de/ preview the editor
+    lands on ``/en/.../edit/<en_pk>/``.
+
+    The patch redirects to ``cms.toolbar.utils.get_object_edit_url`` with
+    the active request language when the addon is enabled and the
+    request language differs from the content's, so the CMS-side URL
+    rewrite kicks in and the editor stays on ``/de/``."""
+
+    def test_get_editable_url_uses_request_language(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        with override('de'):
+            url = versioning_helpers.get_editable_url(en)
+        self.assertTrue(url.startswith('/de/'),
+                        f'expected /de/ prefix, got {url!r}')
+        self.assertIn(f'/edit/{en.pk}/', url)
+
+    def test_get_editable_url_unaltered_when_request_matches_obj(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        # Active language matches obj.language => original behaviour.
+        with override('en'):
+            url = versioning_helpers.get_editable_url(en)
+        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_get_editable_url_unaltered_when_addon_disabled(self):
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        with override('de'):
+            url = versioning_helpers.get_editable_url(en)
+        self.assertTrue(url.startswith('/en/'),
+                        f'expected unpatched /en/ behaviour, got {url!r}')
+
+
 class AppReadyConfigCheckTests(_BaseTestCase):
     """`GlobalUntranslatedPlaceholderConfig.ready()` raises ImproperlyConfigured
     when the addon is enabled but the redirect middleware is missing or

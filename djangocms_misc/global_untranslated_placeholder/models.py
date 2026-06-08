@@ -161,31 +161,38 @@ def _patch_toolbar_url_helpers():
     # in apps.py.
 
 
-def _patch_versioning_get_preview_url():
+def _patch_versioning_url_helpers():
     """
-    djangocms_versioning.admin.publish_view (and related views) redirect to
-    ``djangocms_versioning.helpers.get_preview_url(version.content)`` after
-    a successful publish. That helper, when no explicit ``language`` arg is
-    given, falls back to ``content_obj.language`` — which under our addon
-    is always the default language ('en'), because the editor was redirected
-    onto the default-language sibling. The CMS-side patch above can't catch
-    it because the call into ``get_object_preview_url`` passes the matching
-    ``language=content_obj.language``, so its "rewrite when caller's language
-    differs from obj.language" branch is skipped. The editor finishes
-    publishing from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
+    djangocms_versioning.admin views build redirect URLs via two helpers
+    in djangocms_versioning.helpers:
 
-    Patch the versioning helper: when the addon is enabled and no language
-    was explicitly passed, use the currently active request language (set by
-    LocaleMiddleware from the URL prefix) instead of the content's language.
-    Falls back cleanly to the original behaviour when the addon is off or
-    djangocms-versioning is not installed.
+    - ``get_preview_url(content_obj, language=None)`` — used by
+      ``publish_view`` and others. When ``language`` is not passed, the
+      original falls back to ``content_obj.language`` — always the default
+      ('en') under our addon, so the CMS-side patch above sees
+      ``language == obj.language`` and skips the URL rewrite. Editor
+      publishes from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
+
+    - ``get_editable_url(content_obj, force_admin=False)`` — used by
+      ``edit_redirect_view`` after creating a new draft. Always uses
+      ``language = getattr(content_obj, "language", None)`` (no parameter
+      to override). Same effect: after "Neuer Entwurf" on a /de/ preview
+      the editor lands on ``/en/.../edit/<en_pk>/``.
+
+    Patch both: when the addon is enabled and no explicit language is
+    given, use the currently active request language (set by
+    LocaleMiddleware from the URL prefix) instead of the content's
+    language. Falls back cleanly to the original behaviour when the addon
+    is off or djangocms-versioning is not installed.
     """
     if not apps.is_installed('djangocms_versioning'):
         return
     from djangocms_versioning import helpers as versioning_helpers
+    from djangocms_versioning import admin as versioning_admin
     from django.utils.translation import get_language
 
-    original = versioning_helpers.get_preview_url
+    original_preview = versioning_helpers.get_preview_url
+    original_editable = versioning_helpers.get_editable_url
 
     def patched_get_preview_url(content_obj, language=None):
         if (
@@ -195,16 +202,41 @@ def _patch_versioning_get_preview_url():
             request_language = get_language()
             if request_language:
                 language = request_language
-        return original(content_obj, language=language)
+        return original_preview(content_obj, language=language)
+
+    def patched_get_editable_url(content_obj, force_admin=False):
+        # ``get_editable_url`` has no ``language`` parameter; we instead
+        # delegate to the patched CMS-side helper directly when the addon
+        # is enabled and the request language differs from the content's,
+        # so the URL rewrite kicks in. Otherwise fall back to the original.
+        if get_untranslated_default_language_if_enabled():
+            request_language = get_language()
+            obj_language = getattr(content_obj, 'language', None)
+            if (
+                request_language
+                and obj_language
+                and request_language != obj_language
+                and not force_admin
+            ):
+                # Reuse the original helper's "editable model" branch by
+                # calling get_object_edit_url with the request language.
+                # The CMS-side patch then rewrites the URL prefix to
+                # match. is_editable_model + the admin-fallback branch
+                # of the original are preserved by the fall-through below
+                # when those conditions don't hold.
+                from cms.utils.helpers import is_editable_model
+                if is_editable_model(content_obj.__class__):
+                    return toolbar_utils.get_object_edit_url(
+                        content_obj, language=request_language,
+                    )
+        return original_editable(content_obj, force_admin=force_admin)
 
     versioning_helpers.get_preview_url = patched_get_preview_url
-    # djangocms_versioning.admin imports get_preview_url by name; rebind
-    # the local reference there too so publish_view picks up the patch.
-    # We don't need the deferred-import dance the toolbar patch needs
-    # because djangocms_versioning.admin's module-level code is safe to
-    # import at addon load time (no cms_extension access).
-    from djangocms_versioning import admin as versioning_admin
+    versioning_helpers.get_editable_url = patched_get_editable_url
+    # djangocms_versioning.admin imports both by name; rebind the local
+    # references so publish_view + edit_redirect_view pick up the patches.
     versioning_admin.get_preview_url = patched_get_preview_url
+    versioning_admin.get_editable_url = patched_get_editable_url
 
 
 from django.apps import apps  # noqa: E402  (need this for the optional patch)
@@ -212,4 +244,4 @@ from django.apps import apps  # noqa: E402  (need this for the optional patch)
 _patch_content_renderer()
 _patch_structure_renderer()
 _patch_toolbar_url_helpers()
-_patch_versioning_get_preview_url()
+_patch_versioning_url_helpers()
