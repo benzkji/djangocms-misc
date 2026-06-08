@@ -55,6 +55,17 @@ def _patch_content_renderer():
             # cms_alias_tags). The swapped placeholder's plugins live under
             # the default language; filtering by anything else returns empty.
             language = default_lang
+            # cms 4.1.11's render_page_placeholder preloads plugins with
+            # get_language() (the request language) BEFORE we run, caching an
+            # empty plugin list on this default-language placeholder via
+            # _plugins_cache. The language override above can't un-poison it;
+            # drop the cache so plugins are re-fetched under default_lang.
+            # (Pre-4.1.11 the preload used self.request_language, which
+            # patched_init already pins.)
+            if hasattr(placeholder, '_plugins_cache'):
+                del placeholder._plugins_cache
+            if hasattr(placeholder, '_all_plugins_cache'):
+                del placeholder._all_plugins_cache
 
         return original_render_placeholder(
             self, placeholder, context, language=language, page=page,
@@ -80,6 +91,13 @@ def _patch_structure_renderer():
         if default_lang:
             placeholder = _resolve_default_placeholder(placeholder)
             language = default_lang
+            # Symmetric defense vs ContentRenderer's cache drop — see comment
+            # there. Cheap and bounds the surprise window if a single request
+            # touches both renderers for the same placeholder.
+            if hasattr(placeholder, '_plugins_cache'):
+                del placeholder._plugins_cache
+            if hasattr(placeholder, '_all_plugins_cache'):
+                del placeholder._all_plugins_cache
         return original_render_placeholder(self, placeholder, language, page=page)
 
     StructureRenderer.__init__ = patched_init

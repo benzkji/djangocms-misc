@@ -8,8 +8,16 @@ selenium
 
 django<=5
 django-appconf
-django-cms==4.1
-djangocms-versioning
+# cms 4.1.11 is the first release where render_page_placeholder preloads with
+# get_language() (the request language) instead of self.request_language;
+# global_untranslated_placeholder's cache-drop fix and its regression tests
+# target that path. Pin to 4.1.11+ so CI exercises it.
+django-cms>=4.1.11,<4.2
+# djangocms-versioning >=2.2 removes the VersionContentRenderer.
+# render_obj_placeholder override for cms != 4.1.0/4.1.1, so the canonical
+# {% placeholder %} path goes through render_page_placeholder (exposing the
+# preload-poison bug the cache-drop fix addresses).
+djangocms-versioning>=2.2
 # djangocms-admin-style==1.3.0
 # djangocms-admin-style==1.5.0
 django-filer
