@@ -3,7 +3,6 @@
 from cms.api import add_plugin, create_page, create_page_content
 from cms.models import PageContent
 from django.contrib.auth.models import User
-from django.db.models.signals import post_save
 from django.test import Client, TestCase, modify_settings
 
 from djangocms_misc.basic.templatetags.djangocms_misc_tags import (
@@ -22,12 +21,6 @@ def _publish(page_content, user):
 
 class BasicAppTests(TestCase):
     def setUp(self):
-        # See test_untranslated_placeholders.py for context on the defensive
-        # disconnect of the autopublisher signal.
-        post_save.disconnect(
-            sender=None,
-            dispatch_uid="cms_autopublisher_publish_check_save_plugin_instance",
-        )
         self.client = Client()
         self.user = User.objects.create_superuser(
             username="fred",

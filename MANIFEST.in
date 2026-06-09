@@ -4,7 +4,6 @@ include PYPI.md
 global-exclude *.orig *.pyc *.log *.swp
 
 recursive-include djangocms_misc/basic *
-recursive-include djangocms_misc/autopublisher *
 recursive-include djangocms_misc/global_untranslated_placeholder *
 recursive-include djangocms_misc/admin_style *
 recursive-include djangocms_misc/apphook_templates *

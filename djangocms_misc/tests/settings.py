@@ -139,6 +139,10 @@ COVERAGE_MODULE_EXCLUDES = [
 ]
 
 EXTERNAL_APPS = [
+    # modeltranslation must come before any app whose admin uses TranslationAdmin,
+    # so its ready() registers translations before admin autodiscovery runs
+    # (djangocms-versioning >=2.5 triggers admin.autodiscover() from cms ready()).
+    "modeltranslation",
     # 'django.contrib.admindocs',
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -158,7 +162,6 @@ EXTERNAL_APPS = [
     "menus",
     "filer",
     # 'hvad',
-    "modeltranslation",
     # 'ckeditor',
     "easy_thumbnails",
     "django.contrib.admin",
@@ -169,7 +172,6 @@ INTERNAL_APPS = [
     "djangocms_misc.admin_style",
     "djangocms_misc.alternate_toolbar",
     "djangocms_misc.global_untranslated_placeholder",
-    # 'djangocms_misc.autopublisher',
     # 'djangocms_misc.untranslated_placeholder',
     # 'djangocms_misc.editmode_fallback_placeholder',
     "djangocms_misc.tests.test_app",

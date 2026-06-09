@@ -11,7 +11,6 @@ from cms.utils.placeholder import get_placeholder_from_slot
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models.signals import post_save
 from django.test import RequestFactory, TestCase, override_settings
 
 from djangocms_misc.global_untranslated_placeholder import utils
@@ -34,20 +33,6 @@ from djangocms_misc.tests.test_app.models import (
     Region,
     RegionContent,
 )
-
-
-class _BaseTestCase(TestCase):
-    def setUp(self):
-        # The djangocms_misc.autopublisher app is not ported to CMS 4 yet;
-        # when test_autopublisher.py runs @modify_settings(INSTALLED_APPS=...)
-        # it connects a post_save handler that calls CMS-3.x-only methods,
-        # and the handler stays connected for the rest of the test process.
-        # Defensively disconnect it.
-        post_save.disconnect(
-            sender=None,
-            dispatch_uid="cms_autopublisher_publish_check_save_plugin_instance",
-        )
-        super().setUp()
 
 
 def _make_user(username="tester"):
@@ -83,7 +68,7 @@ def _make_blogpost_with_languages(en_text="en text", de_text="de text"):
     return post, en, de, en_ph, de_ph
 
 
-class GenericSiblingResolverTests(_BaseTestCase):
+class GenericSiblingResolverTests(TestCase):
     """Step 4 + part of step 7: helper-level coverage of get_default_language_sibling
     for a non-PageContent versionable."""
 
@@ -104,7 +89,7 @@ class GenericSiblingResolverTests(_BaseTestCase):
         self.assertEqual(sibling.pk, en.pk)
 
 
-class RendererPlaceholderSwapTests(_BaseTestCase):
+class RendererPlaceholderSwapTests(TestCase):
     """Step 5: the renderer-side resolver swaps a non-default-language
     placeholder for the default-language sibling's same-slot placeholder."""
 
@@ -156,7 +141,7 @@ class RendererPlaceholderSwapTests(_BaseTestCase):
         self.assertNotIn("hidden-de", str(rendered))
 
 
-class EditUrlRedirectTests(_BaseTestCase):
+class EditUrlRedirectTests(TestCase):
     """Step 6: middleware redirects edit URLs for the de BlogPostContent
     to the equivalent en BlogPostContent URL, preserving the URL prefix."""
 
@@ -203,7 +188,7 @@ class EditUrlRedirectTests(_BaseTestCase):
         self.assertIsNone(response)
 
 
-class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
+class AutoCreateDefaultLanguageDraftTests(TestCase):
     """When the default-language sibling has only a PUBLISHED Version (no
     DRAFT), the middleware/helper must NOT redirect onto the immutable
     published content. Instead, mirror djangocms-versioning's "New Draft"
@@ -345,7 +330,7 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
         self.assertEqual(Version.objects.count(), versions_before)
 
 
-class CascadePublishLanguageSiblingsTests(_BaseTestCase):
+class CascadePublishLanguageSiblingsTests(TestCase):
     """When any language sibling is published, also publish other-language
     siblings that have BOTH a DRAFT and an existing PUBLISHED Version."""
 
@@ -487,7 +472,7 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
         self.assertEqual(self._state_of(fr_published), v_const.UNPUBLISHED)
 
 
-class PluginLanguageSignalTests(_BaseTestCase):
+class PluginLanguageSignalTests(TestCase):
     """Step 7: pre_save signal pins CMSPlugin.language to the default
     language for ANY content model, not just PageContent."""
 
@@ -507,7 +492,7 @@ class PluginLanguageSignalTests(_BaseTestCase):
         self.assertEqual(plugin.language, "en")
 
 
-class NoteModeltranslationStyleTests(_BaseTestCase):
+class NoteModeltranslationStyleTests(TestCase):
     """Step 9: a model with no `language` field is treated as "single record
     holds all languages". The resolver leaves its placeholders alone; the
     signal pins plugin.language."""
@@ -538,7 +523,7 @@ class NoteModeltranslationStyleTests(_BaseTestCase):
         self.assertIsNone(response)
 
 
-class RegionVersionedWithoutLanguageTests(_BaseTestCase):
+class RegionVersionedWithoutLanguageTests(TestCase):
     """Step 10: a versionable whose extra_grouping_fields does NOT contain
     'language' is left alone by the resolver and middleware."""
 
@@ -555,7 +540,7 @@ class RegionVersionedWithoutLanguageTests(_BaseTestCase):
         self.assertEqual(swapped.pk, region_ph.pk)
 
 
-class PageContentNoVersioningFallbackTests(_BaseTestCase):
+class PageContentNoVersioningFallbackTests(TestCase):
     """Step 8: when djangocms-versioning is not installed, the helper falls
     back to a page+language filter on PageContent.
 
@@ -599,7 +584,7 @@ class PageContentNoVersioningFallbackTests(_BaseTestCase):
 
 
 @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
-class AddonDisabledTests(_BaseTestCase):
+class AddonDisabledTests(TestCase):
     """Sanity check: when the addon is disabled, the resolver leaves
     everything alone for any content model."""
 
@@ -609,7 +594,7 @@ class AddonDisabledTests(_BaseTestCase):
         self.assertIsNone(utils.get_default_language_sibling(de))
 
 
-class ToolbarUrlHelperLanguagePriorityTests(_BaseTestCase):
+class ToolbarUrlHelperLanguagePriorityTests(TestCase):
     """Regression: cms.toolbar.utils.get_object_{edit,preview,structure}_url
     have ``language = getattr(obj, "language", language)  # Object trumps
     parameter``, so even when CMSToolbar passes ``language=request_language``,
@@ -676,7 +661,7 @@ class ToolbarUrlHelperLanguagePriorityTests(_BaseTestCase):
         )
 
 
-class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
+class VersioningGetPreviewUrlPatchTests(TestCase):
     """Regression: djangocms-versioning's publish_view redirects to
     ``get_preview_url(version.content)``. That helper, when no explicit
     ``language`` is passed, falls back to ``content_obj.language`` — which
@@ -727,7 +712,7 @@ class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
         )
 
 
-class VersioningGetEditableUrlPatchTests(_BaseTestCase):
+class VersioningGetEditableUrlPatchTests(TestCase):
     """Regression: djangocms-versioning's ``edit_redirect_view`` (after
     creating a new draft) redirects to
     ``djangocms_versioning.helpers.get_editable_url(target.content)``.
@@ -774,7 +759,7 @@ class VersioningGetEditableUrlPatchTests(_BaseTestCase):
         )
 
 
-class AppReadyConfigCheckTests(_BaseTestCase):
+class AppReadyConfigCheckTests(TestCase):
     """`GlobalUntranslatedPlaceholderConfig.ready()` raises ImproperlyConfigured
     when the addon is enabled but the redirect middleware is missing or
     misordered. When the addon is disabled, the check is skipped."""

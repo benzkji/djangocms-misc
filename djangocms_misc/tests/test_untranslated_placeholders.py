@@ -2,7 +2,6 @@
 from cms.api import add_plugin, create_page, create_page_content
 from cms.models import PageContent
 from django.contrib.auth import get_user_model
-from django.db.models.signals import post_save
 from django.test import Client
 from django.test.testcases import TestCase
 
@@ -11,15 +10,6 @@ from djangocms_misc.tests.test_app.cms_plugins import TestPlugin
 
 class UntranslatedPlaceholderTestCase(TestCase):
     def setUp(self):
-        # The djangocms_misc.autopublisher app is not ported to CMS 4 yet;
-        # when test_autopublisher.py runs @modify_settings(INSTALLED_APPS=...)
-        # it connects a post_save handler that calls CMS-3.x-only methods,
-        # and the handler stays connected for the rest of the test process.
-        # Defensively disconnect it.
-        post_save.disconnect(
-            sender=None,
-            dispatch_uid="cms_autopublisher_publish_check_save_plugin_instance",
-        )
         self.client = Client()
         self.user = get_user_model().objects.create_superuser(
             username="admin",

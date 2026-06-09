@@ -14,7 +14,6 @@ customizing [django-cms](https://github.com/divio/django-cms), as a set of difer
 - [djangocms_misc.admin_style](#admin-style) (enhancements for djangocms-admin-style)
 - [djangocms_misc.alternate_toolbar](#alternate-toolbar) (alternate djangocms toolbar)
 - [djangocms_misc.global_untranslated_placeholder](#global-untranslated-placeholder) (as it says)
-- [djangocms_misc.autopublisher](#autopublisher) (draft and live always in sync)
 - djangocms_misc.editmode_fallback_placeholder / djangocms_misc.untranslated_placeholder
   - WARNING: only testing, currently following the `global_untranslated_placeholder` approach.
   - WARNING: very experimental
@@ -208,20 +207,6 @@ working through a small fallback. Models that don't have a `language`
 field (e.g. django-modeltranslation-style single-record models) are not
 swapped — they don't need to be, since the same row holds all languages —
 but the `pre_save` signal still pins `CMSPlugin.language` to the default.
-
-
-### Autopublisher
-
-- WARNING: experimental
-
-Goal: Make the "Publish Page changes" button non existent, so draft and live
- version are always the same. With every change made in content or pages, publish the page(s)
- automagically. Using cms signals, this is more or less implemented, but still heavily experimental.
-
-usage: add `djangocms_misc.autopublisher` to `INSTALLED_APPS`. Due to when exactly some singals are
-called, you must add the following stylesheet, to hide the publish button with css:
-
-    <link rel="stylesheet" href="{{ STATIC_URL }}autopublisher/css/autopublisher.css">
 
 
 ### Untranslated Placeholder (not under development currently!)
