@@ -758,6 +758,42 @@ class VersioningGetEditableUrlPatchTests(TestCase):
             url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
         )
 
+    def test_get_editable_url_accepts_three_positional_args_for_versioning_2_5(self):
+        """Regression: djangocms-versioning 2.5+ added a third positional
+        ``params`` arg to ``get_editable_url``; ``edit_redirect_view`` calls
+        it as ``get_editable_url(target.content, force_admin, request.GET)``.
+        Our patch's signature must accept that without TypeError."""
+        from django.http import QueryDict
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        params = QueryDict("language=es&foo=bar")
+        with override("de"):
+            # Simulate the 2.5+ call site: 3 positional args.
+            url = versioning_helpers.get_editable_url(en, False, params)
+        # The patch rewrites to /de/ AND appends ``params.urlencode()``.
+        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
+        self.assertIn(f"/edit/{en.pk}/", url)
+        self.assertIn("language=es", url)
+        self.assertIn("foo=bar", url)
+
+    def test_get_editable_url_with_params_kwarg(self):
+        """Same as above but with ``params`` passed by keyword."""
+        from django.http import QueryDict
+        from django.utils.translation import override
+        from djangocms_versioning import helpers as versioning_helpers
+
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        with override("de"):
+            url = versioning_helpers.get_editable_url(
+                en,
+                force_admin=False,
+                params=QueryDict("x=1"),
+            )
+        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
+        self.assertIn("x=1", url)
+
 
 class AppReadyConfigCheckTests(TestCase):
     """`GlobalUntranslatedPlaceholderConfig.ready()` raises ImproperlyConfigured

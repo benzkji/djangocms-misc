@@ -197,11 +197,15 @@ def _patch_versioning_url_helpers():
       ``language == obj.language`` and skips the URL rewrite. Editor
       publishes from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
 
-    - ``get_editable_url(content_obj, force_admin=False)`` — used by
-      ``edit_redirect_view`` after creating a new draft. Always uses
-      ``language = getattr(content_obj, "language", None)`` (no parameter
-      to override). Same effect: after "Neuer Entwurf" on a /de/ preview
-      the editor lands on ``/en/.../edit/<en_pk>/``.
+    - ``get_editable_url(content_obj, force_admin=False[, params=None])``
+      — used by ``edit_redirect_view`` after creating a new draft. Always
+      uses ``language = getattr(content_obj, "language", None)`` (no
+      parameter to override). Same effect: after "Neuer Entwurf" on a /de/
+      preview the editor lands on ``/en/.../edit/<en_pk>/``. The optional
+      third ``params`` argument was added in djangocms-versioning 2.5 for
+      passing through ``request.GET``; our patch accepts it as positional
+      or keyword and appends it via ``params.urlencode()`` to match the
+      upstream helper.
 
     Patch both: when the addon is enabled and no explicit language is
     given, use the currently active request language (set by
@@ -225,11 +229,20 @@ def _patch_versioning_url_helpers():
                 language = request_language
         return original_preview(content_obj, language=language)
 
-    def patched_get_editable_url(content_obj, force_admin=False):
+    def patched_get_editable_url(content_obj, force_admin=False, params=None, **kwargs):
         # ``get_editable_url`` has no ``language`` parameter; we instead
         # delegate to the patched CMS-side helper directly when the addon
         # is enabled and the request language differs from the content's,
         # so the URL rewrite kicks in. Otherwise fall back to the original.
+        #
+        # ``params`` is the third positional arg added in djangocms-
+        # versioning 2.5+ for forwarding querystring through
+        # ``edit_redirect_view`` (``get_editable_url(content, force_admin,
+        # request.GET)``). We append it to the rewritten URL the same way
+        # the upstream helper does. Older versioning (≤2.4) never passes
+        # ``params`` so the default ``None`` keeps the original behaviour.
+        # ``**kwargs`` swallows any further future additions and is
+        # forwarded through to the original.
         if get_untranslated_default_language_if_enabled():
             request_language = get_language()
             obj_language = getattr(content_obj, "language", None)
@@ -248,11 +261,25 @@ def _patch_versioning_url_helpers():
                 from cms.utils.helpers import is_editable_model
 
                 if is_editable_model(content_obj.__class__):
-                    return toolbar_utils.get_object_edit_url(
+                    url = toolbar_utils.get_object_edit_url(
                         content_obj,
                         language=request_language,
                     )
-        return original_editable(content_obj, force_admin=force_admin)
+                    if params:
+                        url += "?" + params.urlencode()
+                    return url
+        # Forward kwargs the original accepts. 2.4.x has only force_admin;
+        # 2.5+ adds params. Passing params to a 2.4 original would TypeError,
+        # so retry without params if the first call fails.
+        forwarded = {"force_admin": force_admin}
+        if params is not None:
+            forwarded["params"] = params
+        forwarded.update(kwargs)
+        try:
+            return original_editable(content_obj, **forwarded)
+        except TypeError:
+            forwarded.pop("params", None)
+            return original_editable(content_obj, **forwarded)
 
     versioning_helpers.get_preview_url = patched_get_preview_url
     versioning_helpers.get_editable_url = patched_get_editable_url

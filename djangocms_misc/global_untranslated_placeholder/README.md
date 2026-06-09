@@ -161,6 +161,15 @@ first when our app is listed before `cms` in `INSTALLED_APPS`.
   directly with the request language, letting the CMS-side rewrite
   preserve the editor's URL prefix.
 
+  Compatible with both djangocms-versioning **≤2.4**
+  (`get_editable_url(content_obj, force_admin=False)`) and **2.5+**
+  (`get_editable_url(content_obj, force_admin=False, params=None)`,
+  where `params` is `request.GET` forwarded from `edit_redirect_view`).
+  The patched function accepts `params` as a positional or keyword
+  argument and appends it via `params.urlencode()` to the rewritten
+  URL the same way the upstream helper does; unknown future kwargs
+  are forwarded through `**kwargs` to the original.
+
 Both `djangocms_versioning.helpers.{get_preview_url,get_editable_url}`
 and the `djangocms_versioning.admin.{get_preview_url,get_editable_url}`
 imports (`admin.py` binds them by name at module load) are rebound.
