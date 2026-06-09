@@ -1,4 +1,4 @@
-var ModelTranslation = (function ($) {
+var ModelTranslation = (function($) {
   "use strict";
 
   $("document").ready(init);
@@ -67,13 +67,13 @@ var ModelTranslation = (function ($) {
       }
       translated_items[lang] = $(
         // '.form-row[class*="_' + lang + '"][class*="field-"], td[class*="_' + lang + '"][class*="field-"], th:contains([' + lang + '])'
-        '.form-row[class$="_' +
-          lang +
-          '"], td[class$="_' +
-          lang +
-          '"], th:contains([' +
-          lang +
-          "])",
+        ".form-row[class$=\"_"
+          + lang
+          + "\"], td[class$=\"_"
+          + lang
+          + "\"], th:contains(["
+          + lang
+          + "])",
       );
       if ($button.hasClass("selected")) {
         now_lang = lang;

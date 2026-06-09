@@ -55,12 +55,11 @@ repos:
       - id: ruff
         args: [--fix]
   # js/sass/etc formatter
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.0.2
+  - repo: https://github.com/trim21/dprint-pre-commit
+    rev: v0.53.1.0
     hooks:
-      - id: prettier
-        args: [--list-different]
-        exclude: "(.*\\.html|.*\\.md)$"
+      - id: dprint
+        files: \.(jsx?|tsx?|json|ya?ml|toml)$
   # eslinth, shall we? urrfff
 #  - repo: https://github.com/pre-commit/mirrors-eslint
 #    rev: v8.47.0

@@ -9,20 +9,20 @@ description = "djangocms misc"
 readme = "PYPI.md"
 license = { text = "MIT Licence" }
 authors = [
-    { name = "Ben Stähli", email = "bnzk@bnzk.ch" },
+  { name = "Ben Stähli", email = "bnzk@bnzk.ch" },
 ]
 dependencies = [
-    "django>=1.8",
-    "django-appconf>=1.0",
+  "django>=1.8",
+  "django-appconf>=1.0",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Framework :: Django",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: BSD License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python",
-    "Topic :: Internet :: WWW/HTTP",
+  "Development Status :: 4 - Beta",
+  "Framework :: Django",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Topic :: Internet :: WWW/HTTP",
 ]
 
 [project.urls]
@@ -34,7 +34,6 @@ path = "djangocms_misc/__init__.py"
 [tool.hatch.build]
 include = ["/djangocms_misc"]
 
-
 [tool.ruff]
 # Enable the pycodestyle (`E`) and Pyflakes (`F`) rules by default.
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
@@ -44,7 +43,9 @@ include = ["/djangocms_misc"]
 # T20 = print
 select = [
   # pyflakes, pycodestyle
-  "F", "E", "W",
+  "F",
+  "E",
+  "W",
   # mmcabe
   "C90",
   # isort
@@ -84,28 +85,28 @@ unfixable = ["B"]
 
 # Exclude a variety of commonly ignored directories.
 exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".git-rewrite",
-    ".hg",
-    ".mypy_cache",
-    ".nox",
-    ".pants.d",
-    ".pytype",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "venv",
-    # "migrations",
+  ".bzr",
+  ".direnv",
+  ".eggs",
+  ".git",
+  ".git-rewrite",
+  ".hg",
+  ".mypy_cache",
+  ".nox",
+  ".pants.d",
+  ".pytype",
+  ".ruff_cache",
+  ".svn",
+  ".tox",
+  ".venv",
+  "__pypackages__",
+  "_build",
+  "buck-out",
+  "build",
+  "dist",
+  "node_modules",
+  "venv",
+  # "migrations",
 ]
 per-file-ignores = {}
 
