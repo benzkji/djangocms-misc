@@ -6,7 +6,7 @@ flake8
 # mock
 selenium
 
-django<=5
+Django>=5.2,<5.3
 django-appconf
 # cms 4.1.11 is the first release where render_page_placeholder preloads with
 # get_language() (the request language) instead of self.request_language;

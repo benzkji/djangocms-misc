@@ -148,8 +148,10 @@ def _patch_toolbar_url_helpers():
     from cms.utils.i18n import get_language_list
 
     def _patched(original):
-        def wrapper(obj, language=None):
-            url = original(obj, language=language)
+        def wrapper(obj, language=None, **kwargs):
+            # cms 5 added a ``params`` kwarg to these helpers; forward any
+            # extras so the wrapper stays version-agnostic.
+            url = original(obj, language=language, **kwargs)
             if not get_untranslated_default_language_if_enabled():
                 return url
             if language is None:
