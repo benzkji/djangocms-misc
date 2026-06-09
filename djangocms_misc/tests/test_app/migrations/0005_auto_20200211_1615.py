@@ -5,25 +5,24 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('test_app', '0004_testpluginmodel_field1_fr'),
+        ("test_app", "0004_testpluginmodel_field1_fr"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='testpluginmodel',
-            name='field_date',
+            model_name="testpluginmodel",
+            name="field_date",
             field=models.DateField(default=None, null=True),
         ),
         migrations.AddField(
-            model_name='testpluginmodel',
-            name='field_datetime',
+            model_name="testpluginmodel",
+            name="field_datetime",
             field=models.DateTimeField(default=None, null=True),
         ),
         migrations.AddField(
-            model_name='testpluginmodel',
-            name='field_time',
+            model_name="testpluginmodel",
+            name="field_time",
             field=models.TimeField(default=None, null=True),
         ),
     ]

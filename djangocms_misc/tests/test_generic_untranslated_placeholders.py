@@ -14,13 +14,12 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db.models.signals import post_save
 from django.test import RequestFactory, TestCase, override_settings
 
+from djangocms_misc.global_untranslated_placeholder import utils
 from djangocms_misc.global_untranslated_placeholder.apps import (
     MIDDLEWARE_PATH,
     TOOLBAR_MIDDLEWARE_PATH,
     GlobalUntranslatedPlaceholderConfig,
 )
-
-from djangocms_misc.global_untranslated_placeholder import utils
 from djangocms_misc.global_untranslated_placeholder.middleware import (
     EditModeDefaultLanguageMiddleware,
 )
@@ -46,14 +45,16 @@ class _BaseTestCase(TestCase):
         # Defensively disconnect it.
         post_save.disconnect(
             sender=None,
-            dispatch_uid='cms_autopublisher_publish_check_save_plugin_instance',
+            dispatch_uid="cms_autopublisher_publish_check_save_plugin_instance",
         )
         super().setUp()
 
 
-def _make_user(username='tester'):
+def _make_user(username="tester"):
     return get_user_model().objects.create_superuser(
-        username=username, email=f'{username}@example.com', password='pw',
+        username=username,
+        email=f"{username}@example.com",
+        password="pw",
     )
 
 
@@ -70,15 +71,15 @@ def _make_blogpost_content(post, language, title, user, state=None):
     return content
 
 
-def _make_blogpost_with_languages(en_text='en text', de_text='de text'):
+def _make_blogpost_with_languages(en_text="en text", de_text="de text"):
     user = _make_user()
-    post = BlogPost.objects.create(name='hello-post')
-    en = _make_blogpost_content(post, 'en', 'Hello', user)
-    de = _make_blogpost_content(post, 'de', 'Hallo', user)
-    en_ph = get_placeholder_from_slot(en.placeholders, 'content')
-    de_ph = get_placeholder_from_slot(de.placeholders, 'content')
-    add_plugin(en_ph, TestPlugin, 'en', field1=en_text)
-    add_plugin(de_ph, TestPlugin, 'de', field1=de_text)
+    post = BlogPost.objects.create(name="hello-post")
+    en = _make_blogpost_content(post, "en", "Hello", user)
+    de = _make_blogpost_content(post, "de", "Hallo", user)
+    en_ph = get_placeholder_from_slot(en.placeholders, "content")
+    de_ph = get_placeholder_from_slot(de.placeholders, "content")
+    add_plugin(en_ph, TestPlugin, "en", field1=en_text)
+    add_plugin(de_ph, TestPlugin, "de", field1=de_text)
     return post, en, de, en_ph, de_ph
 
 
@@ -91,7 +92,7 @@ class GenericSiblingResolverTests(_BaseTestCase):
         sibling = utils.get_default_language_sibling(de)
         self.assertIsNotNone(sibling)
         self.assertEqual(sibling.pk, en.pk)
-        self.assertEqual(sibling.language, 'en')
+        self.assertEqual(sibling.language, "en")
 
     def test_default_language_input_returns_sibling_in_default_language(self):
         post, en, de, _, _ = _make_blogpost_with_languages()
@@ -118,9 +119,9 @@ class RendererPlaceholderSwapTests(_BaseTestCase):
         self.assertEqual(swapped.pk, en_ph.pk)
 
     def test_resolver_returns_original_when_no_sibling_exists(self):
-        post = BlogPost.objects.create(name='lonely-post')
-        de = BlogPostContent.objects.create(post=post, language='de', title='Hallo')
-        de_ph = get_placeholder_from_slot(de.placeholders, 'content')
+        post = BlogPost.objects.create(name="lonely-post")
+        de = BlogPostContent.objects.create(post=post, language="de", title="Hallo")
+        de_ph = get_placeholder_from_slot(de.placeholders, "content")
         swapped = _resolve_default_placeholder(de_ph)
         self.assertEqual(swapped.pk, de_ph.pk)
 
@@ -137,21 +138,22 @@ class RendererPlaceholderSwapTests(_BaseTestCase):
         from django.test import RequestFactory
 
         post, en, de, en_ph, de_ph = _make_blogpost_with_languages(
-            en_text='visible-en', de_text='hidden-de',
+            en_text="visible-en",
+            de_text="hidden-de",
         )
-        request = RequestFactory().get('/de/')
+        request = RequestFactory().get("/de/")
         request.session = {}
         request.user = get_user_model()(is_staff=False, is_superuser=False)
         renderer = ContentRenderer(request=request)
-        context = Context({'request': request})
+        context = Context({"request": request})
 
         # Pass language='de' explicitly — the old code would propagate this
         # to the original render_placeholder, which would filter the swapped
         # en placeholder's plugins by language='de' and render nothing.
-        rendered = renderer.render_placeholder(de_ph, context, language='de')
+        rendered = renderer.render_placeholder(de_ph, context, language="de")
 
-        self.assertIn('visible-en', str(rendered))
-        self.assertNotIn('hidden-de', str(rendered))
+        self.assertIn("visible-en", str(rendered))
+        self.assertNotIn("hidden-de", str(rendered))
 
 
 class EditUrlRedirectTests(_BaseTestCase):
@@ -163,34 +165,39 @@ class EditUrlRedirectTests(_BaseTestCase):
         self.factory = RequestFactory()
         self.middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
         self.user = get_user_model().objects.create_superuser(
-            username='editor', email='e@e.com', password='pw',
+            username="editor",
+            email="e@e.com",
+            password="pw",
         )
 
-    def _process(self, request, ct_id, obj_id,
-                 url_name='cms_placeholder_render_object_edit'):
+    def _process(
+        self, request, ct_id, obj_id, url_name="cms_placeholder_render_object_edit"
+    ):
         match = mock.Mock(url_name=url_name)
         request.resolver_match = match
         request.user = self.user
-        return self.middleware.process_view(request, None, (str(ct_id), str(obj_id)), {})
+        return self.middleware.process_view(
+            request, None, (str(ct_id), str(obj_id)), {}
+        )
 
     def test_de_blogpost_redirects_to_en_blogpost(self):
         post, en, de, _, _ = _make_blogpost_with_languages()
         ct_id = ContentType.objects.get_for_model(BlogPostContent).id
-        path = f'/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/'
+        path = f"/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/"
         request = self.factory.get(path)
         response = self._process(request, ct_id, de.pk)
         self.assertIsNotNone(response)
         self.assertEqual(response.status_code, 302)
         # URL prefix preserved at /de/, only the trailing object id swapped.
         self.assertEqual(
-            response['Location'],
-            f'/de/admin/cms/placeholder/object/{ct_id}/edit/{en.pk}/',
+            response["Location"],
+            f"/de/admin/cms/placeholder/object/{ct_id}/edit/{en.pk}/",
         )
 
     def test_en_blogpost_is_not_redirected(self):
         post, en, de, _, _ = _make_blogpost_with_languages()
         ct_id = ContentType.objects.get_for_model(BlogPostContent).id
-        path = f'/en/admin/cms/placeholder/object/{ct_id}/edit/{en.pk}/'
+        path = f"/en/admin/cms/placeholder/object/{ct_id}/edit/{en.pk}/"
         request = self.factory.get(path)
         response = self._process(request, ct_id, en.pk)
         self.assertIsNone(response)
@@ -207,21 +214,26 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
         self.factory = RequestFactory()
         self.middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
         self.user = get_user_model().objects.create_superuser(
-            username='editor', email='e@e.com', password='pw',
+            username="editor",
+            email="e@e.com",
+            password="pw",
         )
 
     def _make_post_with_published_en_and_draft_de(self):
         """Returns (post, published_en_pc, de_pc) where en has only a
         PUBLISHED Version and de has only a DRAFT Version."""
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='auto-draft-post')
-        en = _make_blogpost_content(post, 'en', 'Hello', self.user,
-                                    state=v_const.PUBLISHED)
-        de = _make_blogpost_content(post, 'de', 'Hallo', self.user)
+
+        post = BlogPost.objects.create(name="auto-draft-post")
+        en = _make_blogpost_content(
+            post, "en", "Hello", self.user, state=v_const.PUBLISHED
+        )
+        de = _make_blogpost_content(post, "de", "Hallo", self.user)
         return post, en, de
 
     def test_helper_returns_existing_draft_without_creating_new_version(self):
         from djangocms_versioning.models import Version
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         before = Version.objects.count()
 
@@ -235,15 +247,20 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
         from django.contrib.contenttypes.models import ContentType
         from djangocms_versioning import constants as v_const
         from djangocms_versioning.models import Version
+
         post, published_en, de = self._make_post_with_published_en_and_draft_de()
         ct = ContentType.objects.get_for_model(BlogPostContent)
         # Use _base_manager because BlogPostContent.objects filters to
         # PUBLISHED only (djangocms-versioning's PublishedContentManagerMixin).
-        en_pks_before = list(BlogPostContent._base_manager.filter(
-            post=post, language='en',
-        ).values_list('pk', flat=True))
+        en_pks_before = list(
+            BlogPostContent._base_manager.filter(
+                post=post,
+                language="en",
+            ).values_list("pk", flat=True)
+        )
         en_versions_before = Version.objects.filter(
-            content_type=ct, object_id__in=en_pks_before,
+            content_type=ct,
+            object_id__in=en_pks_before,
         ).count()
         self.assertEqual(en_versions_before, 1)
 
@@ -253,13 +270,18 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
         # PUBLISHED one (which would be uneditable).
         self.assertIsNotNone(sibling)
         self.assertNotEqual(sibling.pk, published_en.pk)
-        self.assertEqual(sibling.language, 'en')
+        self.assertEqual(sibling.language, "en")
         # A new DRAFT Version was created for the en grouper.
-        en_pks_after = list(BlogPostContent._base_manager.filter(
-            post=post, language='en',
-        ).values_list('pk', flat=True))
+        en_pks_after = list(
+            BlogPostContent._base_manager.filter(
+                post=post,
+                language="en",
+            ).values_list("pk", flat=True)
+        )
         en_drafts_after = Version.objects.filter(
-            content_type=ct, object_id__in=en_pks_after, state=v_const.DRAFT,
+            content_type=ct,
+            object_id__in=en_pks_after,
+            state=v_const.DRAFT,
         )
         self.assertEqual(en_drafts_after.count(), 1)
         self.assertEqual(en_drafts_after.first().object_id, sibling.pk)
@@ -267,24 +289,29 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
     def test_middleware_redirects_to_auto_created_draft(self):
         post, published_en, de = self._make_post_with_published_en_and_draft_de()
         ct_id = ContentType.objects.get_for_model(BlogPostContent).id
-        path = f'/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/'
+        path = f"/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/"
         request = self.factory.get(path)
         request.user = self.user
-        match = mock.Mock(url_name='cms_placeholder_render_object_edit')
+        match = mock.Mock(url_name="cms_placeholder_render_object_edit")
         request.resolver_match = match
 
         response = self.middleware.process_view(
-            request, None, (str(ct_id), str(de.pk)), {},
+            request,
+            None,
+            (str(ct_id), str(de.pk)),
+            {},
         )
 
         self.assertIsNotNone(response)
         self.assertEqual(response.status_code, 302)
         # Redirect target: same URL prefix and content type, but a new
         # object_id — neither de nor the published en.
-        self.assertTrue(response['Location'].startswith(
-            f'/de/admin/cms/placeholder/object/{ct_id}/edit/'
-        ))
-        new_pk_str = response['Location'].rstrip('/').rsplit('/', 1)[-1]
+        self.assertTrue(
+            response["Location"].startswith(
+                f"/de/admin/cms/placeholder/object/{ct_id}/edit/"
+            )
+        )
+        new_pk_str = response["Location"].rstrip("/").rsplit("/", 1)[-1]
         new_pk = int(new_pk_str)
         self.assertNotEqual(new_pk, de.pk)
         self.assertNotEqual(new_pk, published_en.pk)
@@ -292,23 +319,27 @@ class AutoCreateDefaultLanguageDraftTests(_BaseTestCase):
         # because the default manager filters to PUBLISHED only under
         # djangocms-versioning.
         new_content = BlogPostContent._base_manager.get(pk=new_pk)
-        self.assertEqual(new_content.language, 'en')
+        self.assertEqual(new_content.language, "en")
 
     def test_preview_url_does_not_auto_create_draft(self):
         """Preview is read-only — viewing a preview URL must NOT have the
         side effect of creating a new DRAFT Version."""
         from djangocms_versioning.models import Version
+
         post, published_en, de = self._make_post_with_published_en_and_draft_de()
         versions_before = Version.objects.count()
         ct_id = ContentType.objects.get_for_model(BlogPostContent).id
-        path = f'/de/admin/cms/placeholder/object/{ct_id}/preview/{de.pk}/'
+        path = f"/de/admin/cms/placeholder/object/{ct_id}/preview/{de.pk}/"
         request = self.factory.get(path)
         request.user = self.user
-        match = mock.Mock(url_name='cms_placeholder_render_object_preview')
+        match = mock.Mock(url_name="cms_placeholder_render_object_preview")
         request.resolver_match = match
 
         self.middleware.process_view(
-            request, None, (str(ct_id), str(de.pk)), {},
+            request,
+            None,
+            (str(ct_id), str(de.pk)),
+            {},
         )
 
         self.assertEqual(Version.objects.count(), versions_before)
@@ -321,23 +352,30 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
     def setUp(self):
         super().setUp()
         self.user = get_user_model().objects.create_superuser(
-            username='publisher', email='p@p.com', password='pw',
+            username="publisher",
+            email="p@p.com",
+            password="pw",
         )
         # Inject the current user into CMS's thread-local; that's the
         # mechanism through which the cascade signal handler picks up the
         # publishing user (the same one CurrentUserMiddleware would set).
         from cms.utils.permissions import set_current_user
+
         set_current_user(self.user)
 
     def tearDown(self):
         from cms.utils.permissions import set_current_user
+
         set_current_user(None)
         super().tearDown()
 
     def _make_draft(self, post, language, title):
         from djangocms_versioning.models import Version
+
         content = BlogPostContent.objects.create(
-            post=post, language=language, title=title,
+            post=post,
+            language=language,
+            title=title,
         )
         return Version.objects.create(content=content, created_by=self.user)
 
@@ -347,19 +385,21 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
         published = self._make_draft(post, language, title)
         published.publish(self.user)
         # Create a separate draft for the same grouper+language
-        new_draft = self._make_draft(post, language, title + ' v2')
+        new_draft = self._make_draft(post, language, title + " v2")
         return published, new_draft
 
     def _state_of(self, version):
         # FSM fields don't allow refresh_from_db setattr; re-fetch instead.
         from djangocms_versioning.models import Version
+
         return Version.objects.get(pk=version.pk).state
 
     def test_cascades_to_sibling_with_draft_and_published(self):
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='cascade-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
-        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        post = BlogPost.objects.create(name="cascade-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
+        de_published, de_draft = self._publish_then_redraft(post, "de", "Hallo")
 
         en_draft.publish(self.user)
 
@@ -371,10 +411,11 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
 
     def test_does_not_cascade_to_sibling_with_only_draft(self):
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='no-published-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+
+        post = BlogPost.objects.create(name="no-published-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
         # de has only a DRAFT — never published.
-        de_draft = self._make_draft(post, 'de', 'Hallo')
+        de_draft = self._make_draft(post, "de", "Hallo")
         self.assertEqual(self._state_of(de_draft), v_const.DRAFT)
 
         en_draft.publish(self.user)
@@ -386,10 +427,11 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
     def test_does_not_cascade_to_sibling_with_no_draft(self):
         from djangocms_versioning import constants as v_const
         from djangocms_versioning.models import Version
-        post = BlogPost.objects.create(name='no-draft-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
+
+        post = BlogPost.objects.create(name="no-draft-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
         # de is published but has no pending DRAFT.
-        de_published_version = self._make_draft(post, 'de', 'Hallo')
+        de_published_version = self._make_draft(post, "de", "Hallo")
         de_published_version.publish(self.user)
 
         version_count_before = Version.objects.count()
@@ -402,9 +444,10 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
     def test_cascade_is_symmetric(self):
         """Publishing a non-default language also cascades."""
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='symmetric-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
-        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        post = BlogPost.objects.create(name="symmetric-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
+        de_published, de_draft = self._publish_then_redraft(post, "de", "Hallo")
 
         de_draft.publish(self.user)
 
@@ -414,9 +457,10 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
     @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
     def test_no_cascade_when_addon_disabled(self):
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='disabled-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
-        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
+
+        post = BlogPost.objects.create(name="disabled-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
+        de_published, de_draft = self._publish_then_redraft(post, "de", "Hallo")
 
         en_draft.publish(self.user)
 
@@ -427,10 +471,11 @@ class CascadePublishLanguageSiblingsTests(_BaseTestCase):
         cascade to the others exactly once — the re-entrance guard
         prevents the cascaded publishes from re-firing the cascade."""
         from djangocms_versioning import constants as v_const
-        post = BlogPost.objects.create(name='reentrance-post')
-        en_published, en_draft = self._publish_then_redraft(post, 'en', 'Hello')
-        de_published, de_draft = self._publish_then_redraft(post, 'de', 'Hallo')
-        fr_published, fr_draft = self._publish_then_redraft(post, 'fr', 'Bonjour')
+
+        post = BlogPost.objects.create(name="reentrance-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
+        de_published, de_draft = self._publish_then_redraft(post, "de", "Hallo")
+        fr_published, fr_draft = self._publish_then_redraft(post, "fr", "Bonjour")
 
         en_draft.publish(self.user)
 
@@ -449,17 +494,17 @@ class PluginLanguageSignalTests(_BaseTestCase):
     def test_signal_pins_blogpost_plugin_language(self):
         # Fresh BlogPostContent with no pre-existing plugins, so the
         # add_plugin call below is the only one in this placeholder.
-        post = BlogPost.objects.create(name='signal-post')
-        de = BlogPostContent.objects.create(post=post, language='de', title='Hallo')
-        de_ph = get_placeholder_from_slot(de.placeholders, 'content')
-        plugin = add_plugin(de_ph, TestPlugin, 'de', field1='forced')
-        self.assertEqual(plugin.language, 'en')
+        post = BlogPost.objects.create(name="signal-post")
+        de = BlogPostContent.objects.create(post=post, language="de", title="Hallo")
+        de_ph = get_placeholder_from_slot(de.placeholders, "content")
+        plugin = add_plugin(de_ph, TestPlugin, "de", field1="forced")
+        self.assertEqual(plugin.language, "en")
 
     def test_signal_pins_note_plugin_language(self):
-        note = Note.objects.create(title='greetings')
-        note_ph = get_placeholder_from_slot(note.placeholders, 'content')
-        plugin = add_plugin(note_ph, TestPlugin, 'de', field1='from de')
-        self.assertEqual(plugin.language, 'en')
+        note = Note.objects.create(title="greetings")
+        note_ph = get_placeholder_from_slot(note.placeholders, "content")
+        plugin = add_plugin(note_ph, TestPlugin, "de", field1="from de")
+        self.assertEqual(plugin.language, "en")
 
 
 class NoteModeltranslationStyleTests(_BaseTestCase):
@@ -468,24 +513,28 @@ class NoteModeltranslationStyleTests(_BaseTestCase):
     signal pins plugin.language."""
 
     def test_note_resolver_returns_original_placeholder(self):
-        note = Note.objects.create(title='greetings')
-        note_ph = get_placeholder_from_slot(note.placeholders, 'content')
+        note = Note.objects.create(title="greetings")
+        note_ph = get_placeholder_from_slot(note.placeholders, "content")
         swapped = _resolve_default_placeholder(note_ph)
         self.assertEqual(swapped.pk, note_ph.pk)
 
     def test_note_sibling_helper_returns_none(self):
-        note = Note.objects.create(title='greetings')
+        note = Note.objects.create(title="greetings")
         self.assertIsNone(utils.get_default_language_sibling(note))
 
     def test_note_edit_url_not_redirected(self):
-        note = Note.objects.create(title='greetings')
+        note = Note.objects.create(title="greetings")
         ct_id = ContentType.objects.get_for_model(Note).id
         factory = RequestFactory()
-        path = f'/de/admin/cms/placeholder/object/{ct_id}/edit/{note.pk}/'
+        path = f"/de/admin/cms/placeholder/object/{ct_id}/edit/{note.pk}/"
         request = factory.get(path)
-        request.resolver_match = mock.Mock(url_name='cms_placeholder_render_object_edit')
+        request.resolver_match = mock.Mock(
+            url_name="cms_placeholder_render_object_edit"
+        )
         middleware = EditModeDefaultLanguageMiddleware(get_response=lambda r: None)
-        response = middleware.process_view(request, None, (str(ct_id), str(note.pk)), {})
+        response = middleware.process_view(
+            request, None, (str(ct_id), str(note.pk)), {}
+        )
         self.assertIsNone(response)
 
 
@@ -494,14 +543,14 @@ class RegionVersionedWithoutLanguageTests(_BaseTestCase):
     'language' is left alone by the resolver and middleware."""
 
     def test_region_sibling_helper_returns_none(self):
-        region = Region.objects.create(name='eu')
-        content = RegionContent.objects.create(region=region, title='EU')
+        region = Region.objects.create(name="eu")
+        content = RegionContent.objects.create(region=region, title="EU")
         self.assertIsNone(utils.get_default_language_sibling(content))
 
     def test_region_resolver_returns_original_placeholder(self):
-        region = Region.objects.create(name='eu')
-        content = RegionContent.objects.create(region=region, title='EU')
-        region_ph = get_placeholder_from_slot(content.placeholders, 'content')
+        region = Region.objects.create(name="eu")
+        content = RegionContent.objects.create(region=region, title="EU")
+        region_ph = get_placeholder_from_slot(content.placeholders, "content")
         swapped = _resolve_default_placeholder(region_ph)
         self.assertEqual(swapped.pk, region_ph.pk)
 
@@ -522,23 +571,28 @@ class PageContentNoVersioningFallbackTests(_BaseTestCase):
         # create_page call (draft). For this fallback test we just need two
         # PageContent rows for the same Page, one per language.
         page = create_page(
-            'home',
-            template='base.html',
-            language='en',
+            "home",
+            template="base.html",
+            language="en",
             created_by=get_user_model().objects.create_superuser(
-                username='u', email='u@u.com', password='p',
+                username="u",
+                email="u@u.com",
+                password="p",
             ),
         )
         # Fetch the en PageContent that create_page produced.
-        en_pc = PageContent._base_manager.filter(page=page, language='en').first()
+        en_pc = PageContent._base_manager.filter(page=page, language="en").first()
         self.assertIsNotNone(en_pc)
         # Manually create a de PageContent row (skipping the full versioning
         # add-translation flow, which is not what we are testing here).
         de_pc = PageContent._base_manager.create(
-            page=page, language='de', title='home-de', template='base.html',
+            page=page,
+            language="de",
+            title="home-de",
+            template="base.html",
         )
 
-        with mock.patch.object(utils, '_versioning_installed', return_value=False):
+        with mock.patch.object(utils, "_versioning_installed", return_value=False):
             sibling = utils.get_default_language_sibling(de_pc)
         self.assertIsNotNone(sibling)
         self.assertEqual(sibling.pk, en_pc.pk)
@@ -572,48 +626,54 @@ class ToolbarUrlHelperLanguagePriorityTests(_BaseTestCase):
 
     def test_edit_url_honours_explicit_language_parameter(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # en.language == 'en'; explicit request for 'de' must win.
-        url = toolbar_utils.get_object_edit_url(en, language='de')
-        self.assertTrue(url.startswith('/de/'),
-                        f'expected /de/ prefix, got {url!r}')
+        url = toolbar_utils.get_object_edit_url(en, language="de")
+        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
         # The object_id portion still references the en object.
-        self.assertIn(f'/edit/{en.pk}/', url)
+        self.assertIn(f"/edit/{en.pk}/", url)
 
     def test_preview_url_honours_explicit_language_parameter(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
-        url = toolbar_utils.get_object_preview_url(en, language='de')
-        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+        url = toolbar_utils.get_object_preview_url(en, language="de")
+        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
 
     def test_structure_url_honours_explicit_language_parameter(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
-        url = toolbar_utils.get_object_structure_url(en, language='de')
-        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+        url = toolbar_utils.get_object_structure_url(en, language="de")
+        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
 
     def test_unaltered_when_language_matches_object(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Explicit language matches obj.language => unchanged.
-        url = toolbar_utils.get_object_edit_url(en, language='en')
-        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+        url = toolbar_utils.get_object_edit_url(en, language="en")
+        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
 
     def test_unaltered_when_no_language_parameter(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # No language parameter => original CMS behavior (obj.language wins).
         url = toolbar_utils.get_object_edit_url(en)
-        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
 
     @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
     def test_unaltered_when_addon_disabled(self):
         from cms.toolbar import utils as toolbar_utils
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Addon off => CMS's "object trumps parameter" rule applies unchanged.
-        url = toolbar_utils.get_object_edit_url(en, language='de')
-        self.assertTrue(url.startswith('/en/'),
-                        f'expected unpatched /en/ behaviour, got {url!r}')
+        url = toolbar_utils.get_object_edit_url(en, language="de")
+        self.assertTrue(
+            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
+        )
 
 
 class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
@@ -632,33 +692,39 @@ class VersioningGetPreviewUrlPatchTests(_BaseTestCase):
     def test_get_preview_url_uses_request_language_when_no_arg(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Simulate the user being on /de/: LocaleMiddleware activates 'de'.
-        with override('de'):
+        with override("de"):
             url = versioning_helpers.get_preview_url(en)
-        self.assertTrue(url.startswith('/de/'),
-                        f'expected /de/ prefix from active language, got {url!r}')
-        self.assertIn(f'/preview/{en.pk}/', url)
+        self.assertTrue(
+            url.startswith("/de/"),
+            f"expected /de/ prefix from active language, got {url!r}",
+        )
+        self.assertIn(f"/preview/{en.pk}/", url)
 
     def test_get_preview_url_respects_explicit_language(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Explicit language wins over the active one.
-        with override('en'):
-            url = versioning_helpers.get_preview_url(en, language='de')
-        self.assertTrue(url.startswith('/de/'), f'got {url!r}')
+        with override("en"):
+            url = versioning_helpers.get_preview_url(en, language="de")
+        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
 
     @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
     def test_get_preview_url_unaltered_when_addon_disabled(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Addon off -> versioning's original behaviour: content.language wins.
-        with override('de'):
+        with override("de"):
             url = versioning_helpers.get_preview_url(en)
-        self.assertTrue(url.startswith('/en/'),
-                        f'expected unpatched /en/ behaviour, got {url!r}')
+        self.assertTrue(
+            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
+        )
 
 
 class VersioningGetEditableUrlPatchTests(_BaseTestCase):
@@ -678,31 +744,34 @@ class VersioningGetEditableUrlPatchTests(_BaseTestCase):
     def test_get_editable_url_uses_request_language(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
-        with override('de'):
+        with override("de"):
             url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(url.startswith('/de/'),
-                        f'expected /de/ prefix, got {url!r}')
-        self.assertIn(f'/edit/{en.pk}/', url)
+        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
+        self.assertIn(f"/edit/{en.pk}/", url)
 
     def test_get_editable_url_unaltered_when_request_matches_obj(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
         # Active language matches obj.language => original behaviour.
-        with override('en'):
+        with override("en"):
             url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(url.startswith('/en/'), f'got {url!r}')
+        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
 
     @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
     def test_get_editable_url_unaltered_when_addon_disabled(self):
         from django.utils.translation import override
         from djangocms_versioning import helpers as versioning_helpers
+
         post, en, de, _, _ = _make_blogpost_with_languages()
-        with override('de'):
+        with override("de"):
             url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(url.startswith('/en/'),
-                        f'expected unpatched /en/ behaviour, got {url!r}')
+        self.assertTrue(
+            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
+        )
 
 
 class AppReadyConfigCheckTests(_BaseTestCase):
@@ -712,21 +781,21 @@ class AppReadyConfigCheckTests(_BaseTestCase):
 
     def _app_config(self):
         return GlobalUntranslatedPlaceholderConfig.create(
-            'djangocms_misc.global_untranslated_placeholder',
+            "djangocms_misc.global_untranslated_placeholder",
         )
 
     @override_settings(
-        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
-        MIDDLEWARE=['cms.middleware.toolbar.ToolbarMiddleware'],
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS="en",
+        MIDDLEWARE=["cms.middleware.toolbar.ToolbarMiddleware"],
     )
     def test_raises_when_addon_enabled_and_middleware_missing(self):
         with self.assertRaises(ImproperlyConfigured) as ctx:
             self._app_config().ready()
         self.assertIn(MIDDLEWARE_PATH, str(ctx.exception))
-        self.assertIn('not in MIDDLEWARE', str(ctx.exception))
+        self.assertIn("not in MIDDLEWARE", str(ctx.exception))
 
     @override_settings(
-        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS="en",
         MIDDLEWARE=[
             MIDDLEWARE_PATH,
             TOOLBAR_MIDDLEWARE_PATH,
@@ -735,7 +804,7 @@ class AppReadyConfigCheckTests(_BaseTestCase):
     def test_raises_when_redirect_middleware_before_toolbar(self):
         with self.assertRaises(ImproperlyConfigured) as ctx:
             self._app_config().ready()
-        self.assertIn('must appear AFTER', str(ctx.exception))
+        self.assertIn("must appear AFTER", str(ctx.exception))
 
     @override_settings(
         DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None,
@@ -746,7 +815,7 @@ class AppReadyConfigCheckTests(_BaseTestCase):
         self._app_config().ready()
 
     @override_settings(
-        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS='en',
+        DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS="en",
         MIDDLEWARE=[
             TOOLBAR_MIDDLEWARE_PATH,
             MIDDLEWARE_PATH,

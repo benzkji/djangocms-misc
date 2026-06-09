@@ -1,10 +1,8 @@
 # coding: utf-8
 
 from cms.models import Page, Placeholder
-from django.conf import settings
 from django import template
-
-from djangocms_misc.utils.edit_mode import is_edit_mode
+from django.conf import settings
 
 register = template.Library()
 
@@ -28,8 +26,10 @@ def djangocms_misc_placeholder_empty(page_placeholder, slot=None):
         page = page_placeholder
         from cms.models import PageContent
         from django.utils.translation import get_language
+
         page_content = PageContent.admin_manager.filter(
-            page=page, language=get_language(),
+            page=page,
+            language=get_language(),
         ).first()
         if page_content:
             try:
@@ -37,31 +37,37 @@ def djangocms_misc_placeholder_empty(page_placeholder, slot=None):
             except Placeholder.DoesNotExist:
                 pass
     if placeholder:
-        # // return not placeholder.cmsplugin_set.filter(language=get_language()).exists()
+        # return not placeholder.cmsplugin_set.filter(
+        #     language=get_language()
+        # ).exists()
         return not placeholder.cmsplugin_set.exists()
     return False
 
 
-@register.inclusion_tag('djangocms_misc/tags/page_link.html', takes_context=True)
-def djangocms_misc_page_link(context, lookup, css_class='', link_text='', link_text_attr=''):
+@register.inclusion_tag("djangocms_misc/tags/page_link.html", takes_context=True)
+def djangocms_misc_page_link(
+    context, lookup, css_class="", link_text="", link_text_attr=""
+):
     """
     link_text_attr is not working (yet)
     """
     if not link_text_attr:
-        link_text_attr = 'title'
-    context.update({
-        'lookup': lookup,
-        'css_class': css_class,
-        'link_text': link_text,
-        'link_text_attr': link_text_attr,
-    })
+        link_text_attr = "title"
+    context.update(
+        {
+            "lookup": lookup,
+            "css_class": css_class,
+            "link_text": link_text,
+            "link_text_attr": link_text_attr,
+        }
+    )
     return context
 
 
 @register.simple_tag(takes_context=True)
 def djangocms_misc_get_from_page_content(context, config_name, page_lookup=None):
     config = settings.DJANGOCMS_MISC_GET_FROM_PAGE_CONTENT.get(config_name, None)
-    request = context['request']
+    request = context["request"]
     page = None
     if isinstance(page_lookup, Page):
         page = page_lookup
@@ -82,27 +88,32 @@ def djangocms_misc_get_from_page_content(context, config_name, page_lookup=None)
         except (ValueError, Page.DoesNotExist):
             pass
         if not page:
-            page = getattr(request, 'current_page', None)
+            page = getattr(request, "current_page", None)
     if page and config:
         content = get_from_page_content(request, config, page)
         return content
-    return ''
+    return ""
 
 
 def get_from_page_content(request, config, page):
     placeholders = page.get_placeholders(request.LANGUAGE_CODE)
-    to_scan_placeholders = config.get('placeholders')
-    to_scan_plugins = config.get('plugins')
+    to_scan_placeholders = config.get("placeholders")
+    to_scan_plugins = config.get("plugins")
     for slot_name in to_scan_placeholders:
         placeholder = placeholders.filter(slot=slot_name)
         if placeholder.count():
             language = request.LANGUAGE_CODE
-            if 'djangocms_misc.global_untranslated_placeholder' in settings.INSTALLED_APPS and\
-                    settings.DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS:
-                from djangocms_misc.global_untranslated_placeholder.utils import \
-                    get_untranslated_default_language_if_enabled
+            if (
+                "djangocms_misc.global_untranslated_placeholder"
+                in settings.INSTALLED_APPS
+                and settings.DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS
+            ):
+                from djangocms_misc.global_untranslated_placeholder.utils import (
+                    get_untranslated_default_language_if_enabled,
+                )
+
                 language = get_untranslated_default_language_if_enabled()
-            plugins = placeholder[0].get_plugins(language).order_by('position')
+            plugins = placeholder[0].get_plugins(language).order_by("position")
             for plugin in plugins:
                 if plugin.plugin_type in to_scan_plugins:
                     instance, plugin_cls = plugin.get_plugin_instance()
@@ -114,4 +125,4 @@ def get_from_page_content(request, config, page):
                                 return content
                     else:
                         return instance
-    return ''
+    return ""

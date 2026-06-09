@@ -29,6 +29,14 @@ repos:
       - id: debug-statements
       - id: name-tests-test
         args: [--pytest-test-first]
+        exclude: |
+          (?x)^(
+            djangocms_misc/tests/test_app/.*|
+            djangocms_misc/tests/utils/.*|
+            djangocms_misc/tests/settings.*\.py|
+            djangocms_misc/tests/urls\.py|
+            djangocms_misc/basic/app_template/.*
+          )$
   # django-upgrade suggestions
   - repo: https://github.com/adamchainz/django-upgrade
     rev: "1.14.0"

@@ -5,15 +5,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('test_app', '0003_auto_20171014_0359'),
+        ("test_app", "0003_auto_20171014_0359"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='testpluginmodel',
-            name='field1_fr',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testpluginmodel",
+            name="field1_fr",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
     ]

@@ -1,10 +1,9 @@
 import threading
 
+from cms.models import CMSPlugin
 from django.apps import apps
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
-
-from cms.models import CMSPlugin
 
 from djangocms_misc.global_untranslated_placeholder.utils import (
     get_untranslated_default_language_if_enabled,
@@ -23,7 +22,7 @@ def pre_cms_plugin_save(**kwargs):
     URL redirect (e.g. cms.api.add_plugin called from a management command
     or from djangocms-versioning's cross-language copy).
     """
-    instance = kwargs.get('instance', None)
+    instance = kwargs.get("instance", None)
     if instance and isinstance(instance, CMSPlugin):
         lang = get_untranslated_default_language_if_enabled()
         if lang:
@@ -40,7 +39,7 @@ def _connect_cascade_publish_receiver():
     """Wire up the post_version_operation receiver only when djangocms-
     versioning is installed. Done lazily to keep the addon importable in
     setups that skip versioning."""
-    if not apps.is_installed('djangocms_versioning'):
+    if not apps.is_installed("djangocms_versioning"):
         return
 
     from djangocms_versioning import constants as versioning_constants
@@ -48,7 +47,7 @@ def _connect_cascade_publish_receiver():
 
     @receiver(
         post_version_operation,
-        dispatch_uid='gup_cascade_publish_language_siblings',
+        dispatch_uid="gup_cascade_publish_language_siblings",
     )
     def cascade_publish_language_siblings(sender, operation, obj, **kwargs):
         """
@@ -59,7 +58,7 @@ def _connect_cascade_publish_receiver():
         """
         if operation != versioning_constants.OPERATION_PUBLISH:
             return
-        if getattr(_cascade_state, 'active', False):
+        if getattr(_cascade_state, "active", False):
             return
 
         from cms.utils.permissions import get_current_user

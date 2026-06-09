@@ -2,12 +2,11 @@ from django.apps import AppConfig
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-
 MIDDLEWARE_PATH = (
-    'djangocms_misc.global_untranslated_placeholder.middleware'
-    '.EditModeDefaultLanguageMiddleware'
+    "djangocms_misc.global_untranslated_placeholder.middleware"
+    ".EditModeDefaultLanguageMiddleware"
 )
-TOOLBAR_MIDDLEWARE_PATH = 'cms.middleware.toolbar.ToolbarMiddleware'
+TOOLBAR_MIDDLEWARE_PATH = "cms.middleware.toolbar.ToolbarMiddleware"
 
 
 _toolbar_rebind_done = False
@@ -18,15 +17,16 @@ def _rebind_toolbar_module_url_helpers(**kwargs):
     if _toolbar_rebind_done:
         return
     _toolbar_rebind_done = True
-    from cms.toolbar import utils as toolbar_utils
     from cms.toolbar import toolbar as toolbar_module
+    from cms.toolbar import utils as toolbar_utils
+
     toolbar_module.get_object_edit_url = toolbar_utils.get_object_edit_url
     toolbar_module.get_object_preview_url = toolbar_utils.get_object_preview_url
     toolbar_module.get_object_structure_url = toolbar_utils.get_object_structure_url
 
 
 class GlobalUntranslatedPlaceholderConfig(AppConfig):
-    name = 'djangocms_misc.global_untranslated_placeholder'
+    name = "djangocms_misc.global_untranslated_placeholder"
 
     def ready(self):
         # cms.toolbar.toolbar imports get_object_{edit,preview,structure}_url
@@ -40,17 +40,18 @@ class GlobalUntranslatedPlaceholderConfig(AppConfig):
         # — a module-level access in cms.toolbar.toolbar. Deferring to
         # request_started guarantees CMS's autodiscovery has finished.
         from django.core.signals import request_started
+
         request_started.connect(
             _rebind_toolbar_module_url_helpers,
-            dispatch_uid='gup_rebind_toolbar_url_helpers',
+            dispatch_uid="gup_rebind_toolbar_url_helpers",
         )
 
         # Only enforce the middleware contract when the addon is actually
         # enabled. When it's off (the default), no middleware is needed.
-        if not getattr(settings, 'DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS', None):
+        if not getattr(settings, "DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS", None):
             return
 
-        middleware = list(getattr(settings, 'MIDDLEWARE', ()) or ())
+        middleware = list(getattr(settings, "MIDDLEWARE", ()) or ())
 
         if MIDDLEWARE_PATH not in middleware:
             raise ImproperlyConfigured(

@@ -13,7 +13,7 @@ def get_untranslated_default_language_if_enabled():
       - a language code string ('en', 'de', ...): use that language if it
         appears in settings.LANGUAGES, otherwise fall back to LANGUAGE_CODE
     """
-    value = getattr(settings, 'DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS', None)
+    value = getattr(settings, "DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS", None)
     if value and value is not True:
         for lang_tuple in settings.LANGUAGES:
             if lang_tuple[0] == value:
@@ -24,7 +24,7 @@ def get_untranslated_default_language_if_enabled():
 
 
 def _versioning_installed():
-    return apps.is_installed('djangocms_versioning')
+    return apps.is_installed("djangocms_versioning")
 
 
 def get_versionable_for(instance_or_model):
@@ -74,20 +74,22 @@ def get_default_language_sibling(content, mirror_state_from=None):
         return None
 
     versionable = get_versionable_for(content)
-    if versionable is not None and 'language' in versionable.extra_grouping_fields:
+    if versionable is not None and "language" in versionable.extra_grouping_fields:
         grouping = versionable.grouping_values(content)
-        grouping['language'] = default_lang
+        grouping["language"] = default_lang
         qs = type(content)._base_manager.filter(**grouping)
-        if mirror_state_from is not None and hasattr(mirror_state_from, 'versions'):
+        if mirror_state_from is not None and hasattr(mirror_state_from, "versions"):
             source_version = mirror_state_from.versions.first()
             if source_version is not None:
                 qs = qs.filter(versions__state=source_version.state)
         return qs.first()
 
     from cms.models import PageContent
+
     if isinstance(content, PageContent):
         return PageContent._base_manager.filter(
-            page=content.page, language=default_lang,
+            page=content.page,
+            language=default_lang,
         ).first()
 
     return None
@@ -115,12 +117,12 @@ def get_default_language_editable_sibling(content, user):
         return None
 
     versionable = get_versionable_for(content)
-    if versionable is not None and 'language' in versionable.extra_grouping_fields:
+    if versionable is not None and "language" in versionable.extra_grouping_fields:
         from djangocms_versioning import constants as versioning_constants
         from djangocms_versioning.models import Version
 
         grouping = versionable.grouping_values(content)
-        grouping['language'] = default_lang
+        grouping["language"] = default_lang
         base_qs = type(content)._base_manager.filter(**grouping)
 
         # Prefer an existing DRAFT default-language sibling.
@@ -130,7 +132,9 @@ def get_default_language_editable_sibling(content, user):
 
         # Otherwise find the PUBLISHED default-language sibling and copy it
         # to a new DRAFT.
-        published = base_qs.filter(versions__state=versioning_constants.PUBLISHED).first()
+        published = base_qs.filter(
+            versions__state=versioning_constants.PUBLISHED
+        ).first()
         if published is None:
             return None
         try:
@@ -147,9 +151,11 @@ def get_default_language_editable_sibling(content, user):
         return new_draft_version.content
 
     from cms.models import PageContent
+
     if isinstance(content, PageContent):
         return PageContent._base_manager.filter(
-            page=content.page, language=default_lang,
+            page=content.page,
+            language=default_lang,
         ).first()
 
     return None
@@ -176,7 +182,7 @@ def iter_cascade_targets(content):
         return
 
     versionable = get_versionable_for(content)
-    if versionable is None or 'language' not in versionable.extra_grouping_fields:
+    if versionable is None or "language" not in versionable.extra_grouping_fields:
         return
 
     from django.contrib.contenttypes.models import ContentType
@@ -184,19 +190,19 @@ def iter_cascade_targets(content):
     from djangocms_versioning.models import Version
 
     grouping = versionable.grouping_values(content)
-    own_language = grouping.pop('language')
+    own_language = grouping.pop("language")
     grouper_qs = versionable.for_grouping_values(**grouping)
 
     other_languages = (
         grouper_qs.exclude(language=own_language)
-        .values_list('language', flat=True)
+        .values_list("language", flat=True)
         .distinct()
     )
     content_type = ContentType.objects.get_for_model(type(content))
 
     for sibling_language in other_languages:
         sibling_pks = list(
-            grouper_qs.filter(language=sibling_language).values_list('pk', flat=True)
+            grouper_qs.filter(language=sibling_language).values_list("pk", flat=True)
         )
         if not sibling_pks:
             continue

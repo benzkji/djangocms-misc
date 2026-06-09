@@ -5,40 +5,39 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('test_app', '0005_auto_20200211_1615'),
+        ("test_app", "0005_auto_20200211_1615"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='testinlinemodel',
-            name='field1_de',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testinlinemodel",
+            name="field1_de",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name='testinlinemodel',
-            name='field1_en',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testinlinemodel",
+            name="field1_en",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name='testinlinemodel',
-            name='field1_fr',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testinlinemodel",
+            name="field1_fr",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name='testmodel',
-            name='field1_de',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testmodel",
+            name="field1_de",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name='testmodel',
-            name='field1_en',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testmodel",
+            name="field1_en",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name='testmodel',
-            name='field1_fr',
-            field=models.CharField(default='', max_length=64, null=True),
+            model_name="testmodel",
+            name="field1_fr",
+            field=models.CharField(default="", max_length=64, null=True),
         ),
     ]
