@@ -57,7 +57,7 @@ it's pointed at the **default-language content**. Concretely:
 | Editing on `/de/<page>/?edit` | The middleware rewrites the URL to point at the en object id (URL prefix `/de/` is preserved); the editor edits the en placeholders directly. |
 | Edit URL when only en PUBLISHED exists | A new en DRAFT is auto-created via `Version.copy(user)` (same code path as the toolbar's "New Draft" button), and the editor lands on the new draft. |
 | Programmatic `cms.api.add_plugin(de_placeholder, ..., language='de')` | The plugin's `language` is force-pinned to `en` by a `pre_save` signal (defense in depth). |
-| Toolbar's Edit / Neuer Entwurf button URL | Built via `reverse(...)` under `force_language(toolbar_language)` — when the editor's `user_settings.language` differs from the URL prefix they're on, the URL prefix is wrong. The middleware intercepts the resulting `*_edit_redirect` request, reads `version.content.language`, and 302s to the correct prefix. |
+| Toolbar actions (Edit / Neuer Entwurf, publish, unpublish, revert, archive, discard) | These POST-only views redirect to URLs built from `content.language` (always en), and the button URLs themselves can carry the wrong prefix (`reverse(...)` under `force_language(toolbar_language)`). The middleware rewrites the **response** Location's leading `/<lang>/` to match the HTTP Referer — the URL the editor was actually on. |
 | Publishing the en content | Every other-language `PageContent` for the same page that has BOTH a DRAFT and an existing PUBLISHED Version is also published. New-but-unpublished languages are left alone. |
 
 The addon generalizes beyond `PageContent` to **any** content model registered
@@ -123,53 +123,65 @@ keeps the URL prefix correct now — see `middleware.py` below.
 `EditModeDefaultLanguageMiddleware` does three things:
 
 ```
-process_view:
-  cms_placeholder_render_object_edit            — auto-create-draft allowed
-  cms_placeholder_render_object_structure       — auto-create-draft allowed
-  cms_placeholder_render_object_preview         — strict state-match, no side effects
-  *_edit_redirect (djangocms-versioning)        — rewrite URL prefix to content.language
+process_view (GET render endpoints):
+  cms_placeholder_render_object_edit            — Referer-language redirect (XHR only),
+  cms_placeholder_render_object_structure        then object-id swap (auto-create-draft)
+  cms_placeholder_render_object_preview         — Referer-language redirect (any request),
+                                                  then object-id swap (strict state-match)
 
-__call__ (process_response):
-  *_publish / *_unpublish / *_revert            — rewrite redirect Location to Referer's language
-  *_archive / *_discard
+__call__ (response phase, POST-only versioning actions):
+  *_edit_redirect / *_publish / *_unpublish     — rewrite redirect Location to Referer's language
+  *_revert / *_archive / *_discard                (LANGUAGE_REDIRECT_URL_SUFFIXES)
 ```
 
-**Placeholder edit/structure/preview URLs.** When the targeted object's
-language is not the default, the middleware rewrites the trailing
-`object_id` in `request.path` (the URL prefix `/de/` is **preserved**
-so downstream `cms_path` queries keep the original language, which
-`django-modeltranslation` and similar use to pick the right tab).
+**Placeholder edit/structure/preview URLs.** Two steps, in order:
 
-**Versioning edit-redirect URLs.** The toolbar's Edit / Neuer Entwurf
-button builds its `href` via `reverse(...)` inside
-`_call_toolbar`'s `with force_language(self.toolbar_language)`. When
-the editor's `user_settings.language` (UI preference) differs from
-the URL prefix they're on, the button URL has the wrong language
-prefix — clicking it would flip the whole admin flow into the wrong
-language. The middleware looks up the `Version`, reads
-`version.content.language` (the ground truth — each version belongs
-to a specific PageContent in a specific language), and redirects to
-the same edit-redirect URL under `/<content.language>/`. From there,
-versioning's own `edit_redirect_view` runs under the correct
-`request_language` and the rest of the flow (draft creation, redirect
-to `get_editable_url`) lands on the right prefix.
+1. *Referer-language redirect* (`_redirect_to_referer_language`). The
+   CMS URL helpers apply `language = getattr(obj, "language", language)`
+   (object trumps parameter), so on `/de/.../edit/<en_pk>/` the
+   toolbar's Preview button, the Structure/Content switcher, and the
+   `CMS.config` `edit`/`edit_off`/`structure` URLs (used by the
+   post-save structure-board XHR reload) all come out as `/en/...`.
+   When the request's URL prefix differs from the Referer's language,
+   302 to the same path under the Referer's language — safe for these
+   GET endpoints (no POST→GET method change). Edit and structure URLs
+   are only rewritten for **XHR** requests (`X-Requested-With:
+   XMLHttpRequest`, or `Sec-Fetch-Mode` other than `navigate`) — a
+   top-level navigation to an edit URL may be deliberate. Preview URLs
+   are rewritten for **any** request; the toolbar language menu (which
+   links to other languages' preview URLs) consequently can't switch
+   languages anymore — acceptable under this addon, since every
+   language renders the same default-language plugins anyway.
 
-**Versioning publish / unpublish / revert / archive / discard URLs.**
-Versioning's `*_publish` / `*_unpublish` / `*_revert` / `*_archive` /
-`*_discard` views are POST-only (admin.py:1104 returns 405 to GET) and
-their post-action redirect URL is built from `version.content.language`
-via `get_preview_url` / `get_object_live_url` / `version_list_url`.
-Under this addon the editor is editing the default-language sibling
-(`content.language = 'en'`), so those redirects always land on
-`/en/...` regardless of the URL prefix the editor was actually on.
+2. *Object-id swap.* When the targeted object's language is not the
+   default, rewrite the trailing `object_id` in `request.path` (the
+   URL prefix `/de/` is **preserved** so downstream `cms_path` queries
+   keep the original language, which `django-modeltranslation` and
+   similar use to pick the right tab).
+
+**Versioning action URLs** (`*_edit_redirect` / `*_publish` /
+`*_unpublish` / `*_revert` / `*_archive` / `*_discard`). These views
+are POST-only (versioning's admin returns 405 to GET) and their
+post-action redirect URL is built from `version.content.language` via
+`get_editable_url` / `get_preview_url` / `get_object_live_url` /
+`version_list_url`. Under this addon the editor is editing the
+default-language sibling (`content.language = 'en'`), so those
+redirects always land on `/en/...` regardless of the URL prefix the
+editor was actually on. (The action button URLs themselves can also
+carry the wrong prefix — the toolbar builds them via `reverse(...)`
+under `force_language(self.toolbar_language)`, a user UI preference.)
 
 We can't 302 the inbound POST — a 302 would convert POST→GET and
 versioning would return 405. The middleware instead rewrites the
 **response** Location: when the response is a 3xx for one of these
 action URL names and its Location's leading language segment differs
 from the HTTP Referer's, we swap the Location's leading `/<lang>/` to
-match the Referer's. **The Referer is the source of truth** — it's
-the URL the editor was on when they clicked the action button.
+match the Referer's. **The Referer is the single source of truth** —
+it's the URL the editor was on when they clicked the action button.
+For Edit / Neuer Entwurf this means the POST goes straight through
+versioning's `edit_redirect_view` (no inbound interference), and only
+the outgoing `/<en>/.../edit/<en_pk>/` Location is swapped to
+`/<referer_lang>/.../edit/<en_pk>/`.
 
 No-op when: the URL name doesn't match, the response is not a 3xx,
 the Location has no recognised leading language segment, the Referer
@@ -331,28 +343,28 @@ sync with the default language's publish cycle.
   consumers like `django-modeltranslation` read to pick the right
   translation tab. Using `reverse()` (which would re-prefix the URL with
   `/en/`) is deliberately avoided.
-- **Edit / Neuer Entwurf button URL.** The toolbar's Edit / New Draft
-  button is built via `reverse(...)` inside
-  `CMSToolbar._call_toolbar`'s `with force_language(self.toolbar_language)`
-  block. `toolbar_language` follows the editor's UI-language preference
-  (`user_settings.language`) and can differ from the URL prefix the
-  editor is on. The middleware intercepts the resulting
-  `*_edit_redirect` requests, reads the language off
-  `version.content.language`, and rewrites the URL prefix so the rest
-  of the versioning flow runs under the right language. We do NOT
-  touch `toolbar_language` itself — it remains a user preference for
-  the toolbar UI.
-- **Publish / unpublish / revert / archive / discard redirect target.**
-  Versioning's action views are POST-only and their post-action
-  redirect URLs are built from `content.language` (always en under
-  this addon), so the editor would always land on `/en/...`. We
-  can't 302 the inbound POST (a 302 → GET would yield a 405). The
+- **Versioning action redirect targets** (Edit / Neuer Entwurf,
+  publish, unpublish, revert, archive, discard). These views are
+  POST-only and their post-action redirect URLs are built from
+  `content.language` (always en under this addon), so the editor
+  would always land on `/en/...`. The toolbar's button URLs can also
+  carry the wrong prefix (built via `reverse(...)` under
+  `force_language(self.toolbar_language)` — a user UI preference).
+  We can't 302 the inbound POST (a 302 → GET would yield a 405). The
   middleware rewrites the **response** Location instead: when the
   response is a 3xx and its Location's leading language segment
   differs from the HTTP Referer's leading language segment, swap
   Location's leading `/<lang>/` to match the Referer. The Referer is
-  the source of truth — it's where the editor was when they clicked
-  the action button.
+  the single source of truth — it's where the editor was when they
+  clicked the action button. We do NOT touch `toolbar_language`
+  itself — it remains a user preference for the toolbar UI.
+- **Toolbar GET URLs (Preview button, mode switcher, XHR reload).**
+  Same wrong-prefix problem, handled inbound (safe for GET): requests
+  to the placeholder render endpoints whose URL prefix differs from
+  the Referer's language are 302'd to the Referer's language — edit
+  and structure only when the request is an XHR, preview always. The
+  known trade-off: the toolbar language menu links to other languages'
+  preview URLs, so it can no longer switch languages.
 - **No live data mutation.** The editable-sibling lookup never returns
   a PUBLISHED content. CMS's own check `object_is_editable()` would
   redirect a PUBLISHED edit to a read-only preview; auto-create-draft

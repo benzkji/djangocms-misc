@@ -110,6 +110,31 @@ class RendererPlaceholderSwapTests(TestCase):
         swapped = _resolve_default_placeholder(de_ph)
         self.assertEqual(swapped.pk, de_ph.pk)
 
+    def test_structure_renderer_swaps_and_forces_default_language(self):
+        """The StructureRenderer patch (structure board) had no coverage:
+        same swap + language-force as ContentRenderer, different signature
+        (positional ``language``, no context)."""
+        from cms.plugin_rendering import StructureRenderer
+        from django.test import RequestFactory
+
+        post, en, de, en_ph, de_ph = _make_blogpost_with_languages()
+        en_plugin = en_ph.get_plugins().get()
+        de_plugin = de_ph.get_plugins().get()
+
+        request = RequestFactory().get("/de/")
+        request.session = {}
+        request.user = _make_user("structure-editor")
+        renderer = StructureRenderer(request=request)
+        # patched_init pins the renderer to the default language
+        self.assertEqual(renderer.request_language, "en")
+
+        rendered = str(renderer.render_placeholder(de_ph, language="de"))
+        # The structure board lists the en placeholder's plugin, not the
+        # de one — proving both the placeholder swap and the language
+        # override happened.
+        self.assertIn(f"cms-plugin-{en_plugin.pk}", rendered)
+        self.assertNotIn(f"cms-plugin-{de_plugin.pk}", rendered)
+
     def test_renderer_forces_default_language_when_caller_passes_one(self):
         """Regression: ContentRenderer.render_placeholder was previously
         wrapped with *args/**kwargs, so when a caller passed language='de'
@@ -187,14 +212,35 @@ class EditUrlRedirectTests(TestCase):
         response = self._process(request, ct_id, en.pk)
         self.assertIsNone(response)
 
+    def test_object_swap_preserves_querystring(self):
+        """The cms_path query carried on plugin-edit URLs is what
+        django-modeltranslation reads to pick the right translation tab —
+        it must survive the object-id swap."""
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        ct_id = ContentType.objects.get_for_model(BlogPostContent).id
+        path = f"/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/"
+        request = self.factory.get(f"{path}?cms_path=/de/x/")
+        response = self._process(request, ct_id, de.pk)
+        self.assertIsNotNone(response)
+        self.assertEqual(
+            response["Location"],
+            f"/de/admin/cms/placeholder/object/{ct_id}/edit/{en.pk}/?cms_path=/de/x/",
+        )
 
-class VersioningEditRedirectUrlPrefixTests(TestCase):
-    """When ``_call_toolbar`` activates ``force_language(toolbar_language)``
-    (a user-UI preference, NOT the URL prefix language), the toolbar's
-    Edit / Neuer Entwurf button's ``reverse(…edit_redirect)`` call produces
-    the wrong URL prefix. The middleware catches the request here and
-    rewrites the leading language segment to match the language baked
-    into the version's content."""
+
+class RefererLanguageGetRedirectTests(TestCase):
+    """Inbound Referer-driven language redirect on the placeholder GET
+    render endpoints. The toolbar's Preview button, Structure/Content
+    switcher, and the ``CMS.config`` URLs used by the post-save XHR
+    reload all come out with ``obj.language``'s prefix (object trumps
+    parameter in the CMS URL helpers), i.e. ``/en/...`` even when the
+    editor is on ``/de/``. When the Referer says the editor was on a
+    different language, redirect to the same path under that language.
+
+    Edit/structure URLs only for XHR requests (top-level navigation to
+    an edit URL may be deliberate); preview URLs for any request — the
+    toolbar language menu loses the ability to switch languages, which
+    is acceptable under this addon."""
 
     def setUp(self):
         super().setUp()
@@ -202,67 +248,136 @@ class VersioningEditRedirectUrlPrefixTests(TestCase):
         self.middleware = EditModeDefaultLanguageMiddleware(
             get_response=lambda r: None,
         )
-
-    def _process(self, request, version_id, url_name):
-        match = mock.Mock(url_name=url_name)
-        request.resolver_match = match
-        request.user = mock.Mock(is_authenticated=True, is_staff=True)
-        return self.middleware.process_view(
-            request,
-            None,
-            (str(version_id),),
-            {},
+        self.user = get_user_model().objects.create_superuser(
+            username="xhr-editor",
+            email="x@x.com",
+            password="pw",
         )
 
-    def test_redirects_to_content_language_prefix(self):
-        from djangocms_versioning.models import Version
+    def _process(self, path, url_name, referer=None, xhr=False, sec_fetch=None):
+        headers = {}
+        if referer is not None:
+            headers["HTTP_REFERER"] = referer
+        if xhr:
+            headers["HTTP_X_REQUESTED_WITH"] = "XMLHttpRequest"
+        if sec_fetch is not None:
+            headers["HTTP_SEC_FETCH_MODE"] = sec_fetch
+        request = self.factory.get(path, **headers)
+        request.resolver_match = mock.Mock(url_name=url_name)
+        request.user = self.user
+        # ct/object ids don't matter for the language redirect — it fires
+        # before the object swap even looks at them.
+        return self.middleware.process_view(request, None, ("1", "1"), {})
 
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        de_version = Version.objects.get_for_content(de)
-        path = f"/en/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/"
-        request = self.factory.post(path)
+    def test_xhr_edit_request_redirected_to_referer_language(self):
         response = self._process(
-            request,
-            de_version.pk,
-            "cms_blogpostcontentversion_edit_redirect",
+            "/en/admin/cms/placeholder/object/13/edit/7/",
+            "cms_placeholder_render_object_edit",
+            referer="http://testserver/de/admin/cms/placeholder/object/13/edit/7/",
+            xhr=True,
         )
         self.assertIsNotNone(response)
         self.assertEqual(response.status_code, 302)
-        # URL prefix rewritten from /en/ to /de/ (de_version.content.language).
+        self.assertEqual(
+            response["Location"], "/de/admin/cms/placeholder/object/13/edit/7/"
+        )
+
+    def test_sec_fetch_non_navigate_counts_as_xhr(self):
+        response = self._process(
+            "/en/admin/cms/placeholder/object/13/structure/7/",
+            "cms_placeholder_render_object_structure",
+            referer="http://testserver/de/some-page/",
+            sec_fetch="cors",
+        )
+        self.assertIsNotNone(response)
         self.assertEqual(
             response["Location"],
-            f"/de/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/",
+            "/de/admin/cms/placeholder/object/13/structure/7/",
         )
 
-    def test_no_redirect_when_prefix_already_matches(self):
-        from djangocms_versioning.models import Version
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        de_version = Version.objects.get_for_content(de)
-        path = f"/de/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/"
-        request = self.factory.post(path)
+    def test_navigation_edit_request_not_language_redirected(self):
+        """Top-level navigation (no XHR markers, or Sec-Fetch-Mode:
+        navigate) to an edit URL may be deliberate — leave it alone."""
         response = self._process(
-            request,
-            de_version.pk,
-            "cms_blogpostcontentversion_edit_redirect",
+            "/en/admin/cms/placeholder/object/13/edit/7/",
+            "cms_placeholder_render_object_edit",
+            referer="http://testserver/de/some-page/",
+            sec_fetch="navigate",
+        )
+        # Falls through to the object swap, which returns None here
+        # (nonexistent ct/object ids).
+        self.assertIsNone(response)
+
+    def test_preview_request_redirected_even_as_navigation(self):
+        """Preview is rewritten for any request type — accepting that the
+        toolbar language menu (linking to other languages' previews) can
+        no longer switch languages."""
+        response = self._process(
+            "/en/admin/cms/placeholder/object/13/preview/7/",
+            "cms_placeholder_render_object_preview",
+            referer="http://testserver/de/some-page/",
+            sec_fetch="navigate",
+        )
+        self.assertIsNotNone(response)
+        self.assertEqual(
+            response["Location"],
+            "/de/admin/cms/placeholder/object/13/preview/7/",
+        )
+
+    def test_no_language_redirect_without_referer(self):
+        response = self._process(
+            "/en/admin/cms/placeholder/object/13/preview/7/",
+            "cms_placeholder_render_object_preview",
         )
         self.assertIsNone(response)
 
-    def test_no_redirect_for_unrelated_url_name(self):
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        path = "/en/admin/whatever/"
-        request = self.factory.get(path)
-        response = self._process(request, 1, "whatever_view")
+    def test_no_language_redirect_when_referer_language_matches(self):
+        response = self._process(
+            "/de/admin/cms/placeholder/object/13/preview/7/",
+            "cms_placeholder_render_object_preview",
+            referer="http://testserver/de/some-page/",
+        )
         self.assertIsNone(response)
+
+    def test_querystring_preserved(self):
+        response = self._process(
+            "/en/admin/cms/placeholder/object/13/edit/7/?cms_path=/de/x/",
+            "cms_placeholder_render_object_edit",
+            referer="http://testserver/de/x/",
+            xhr=True,
+        )
+        self.assertIsNotNone(response)
+        self.assertEqual(
+            response["Location"],
+            "/de/admin/cms/placeholder/object/13/edit/7/?cms_path=/de/x/",
+        )
+
+    def test_language_redirect_runs_before_object_swap(self):
+        """A de object requested under /en/ with a /de/ Referer (XHR):
+        the language redirect wins first; the object swap then happens
+        on the follow-up /de/ request."""
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        ct_id = ContentType.objects.get_for_model(BlogPostContent).id
+        response = self._process(
+            f"/en/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/",
+            "cms_placeholder_render_object_edit",
+            referer="http://testserver/de/some-page/",
+            xhr=True,
+        )
+        self.assertIsNotNone(response)
+        self.assertEqual(
+            response["Location"],
+            f"/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/",
+        )
 
 
 class VersioningActionUrlPrefixTests(TestCase):
     """djangocms-versioning's version-id-keyed action endpoints
-    (``*_publish`` / ``*_unpublish`` / ``*_revert`` / ``*_archive`` /
-    ``*_discard``) compute their post-action redirect URL from
-    ``version.content.language``. Under this addon, ``content.language``
-    is always the default ('en'), so every redirect lands on ``/en/...``
-    regardless of which language URL the editor was on.
+    (``*_edit_redirect`` / ``*_publish`` / ``*_unpublish`` / ``*_revert`` /
+    ``*_archive`` / ``*_discard``) compute their post-action redirect URL
+    from ``version.content.language``. Under this addon,
+    ``content.language`` is always the default ('en'), so every redirect
+    lands on ``/en/...`` regardless of which language URL the editor was on.
 
     We can't 302 the inbound POST itself — these endpoints are POST-only
     and a 302 would convert POST→GET, yielding 405. We rewrite the
@@ -403,19 +518,21 @@ class VersioningActionUrlPrefixTests(TestCase):
         )
 
     def test_other_action_endpoints_use_same_handler(self):
-        """``_unpublish`` / ``_revert`` / ``_archive`` / ``_discard`` all
-        match the suffix tuple and get the same Location rewrite."""
-        for suffix in ("unpublish", "revert", "archive", "discard"):
+        """``_edit_redirect`` / ``_unpublish`` / ``_revert`` / ``_archive``
+        / ``_discard`` all match the suffix tuple and get the same
+        Location rewrite."""
+        for suffix in ("edit_redirect", "unpublish", "revert", "archive", "discard"):
+            url_segment = suffix.replace("_", "-")
             with self.subTest(action=suffix):
                 response = self._run(
-                    path=f"/en/admin/cms/pagecontentversion/42/{suffix}/",
-                    location="/en/admin/cms/placeholder/object/13/preview/7/",
+                    path=f"/en/admin/cms/pagecontentversion/42/{url_segment}/",
+                    location="/en/admin/cms/placeholder/object/13/edit/7/",
                     url_name=f"cms_pagecontentversion_{suffix}",
                     referer="http://testserver/de/page/",
                 )
                 self.assertEqual(
                     response["Location"],
-                    "/de/admin/cms/placeholder/object/13/preview/7/",
+                    "/de/admin/cms/placeholder/object/13/edit/7/",
                 )
 
     def test_non_action_url_name_passes_through(self):
@@ -439,6 +556,99 @@ class VersioningActionUrlPrefixTests(TestCase):
         self.assertEqual(
             response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
         )
+
+
+class VersioningActionEndToEndTests(TestCase):
+    """Full-stack action requests through the Django test client: real URL
+    routing (so the registered URL names' suffixes are verified, not
+    assumed), versioning's real views building the real redirect Location,
+    and the middleware rewriting it on the way out. The unit tests above
+    stub ``get_response``; these do not."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_superuser(
+            username="publisher",
+            email="p@p.com",
+            password="pw",
+        )
+        self.client.force_login(self.user)
+
+    def _draft_version(self):
+        from cms.api import create_page
+        from cms.models import PageContent
+        from djangocms_versioning.models import Version
+
+        page = create_page("pub-test", "base.html", "en", created_by=self.user)
+        content = PageContent.admin_manager.filter(page=page, language="en").first()
+        return Version.objects.get_for_content(content)
+
+    def _publish_url(self, version):
+        from django.urls import reverse
+
+        return reverse(
+            "admin:djangocms_versioning_pagecontentversion_publish",
+            args=(version.pk,),
+        )
+
+    def test_publish_redirect_rewritten_to_referer_language(self):
+        version = self._draft_version()
+        url = self._publish_url(version)
+        # The registered URL name must match the middleware's suffix tuple,
+        # otherwise this whole mechanism silently never fires.
+        self.assertTrue(url.endswith(f"/{version.pk}/publish/"), url)
+
+        response = self.client.post(
+            url, headers={"referer": "http://testserver/de/pub-test/?edit"}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response["Location"].startswith("/de/"),
+            f"expected /de/ Location after publish, got {response['Location']!r}",
+        )
+        # And the version really got published. (Re-fetch — the FSM-protected
+        # state field rejects refresh_from_db's direct attribute set.)
+        from djangocms_versioning import constants as v_const
+        from djangocms_versioning.models import Version
+
+        self.assertEqual(Version.objects.get(pk=version.pk).state, v_const.PUBLISHED)
+
+    def test_publish_redirect_untouched_without_referer(self):
+        version = self._draft_version()
+        response = self.client.post(self._publish_url(version))
+        self.assertEqual(response.status_code, 302)
+        # Referer missing → no rewrite; versioning's own Location, built
+        # from content.language='en', stays.
+        self.assertTrue(
+            response["Location"].startswith("/en/"),
+            f"got {response['Location']!r}",
+        )
+
+    def test_edit_redirect_rewritten_to_referer_language(self):
+        """Regression for the POST-only hazard: the earlier inbound-302
+        handler for ``*_edit_redirect`` would have converted the browser's
+        POST to GET → 405. With the unified response-side rewrite the POST
+        goes straight through versioning's ``edit_redirect_view`` and only
+        the outgoing Location is touched."""
+        from django.urls import reverse
+
+        version = self._draft_version()
+        url = reverse(
+            "admin:djangocms_versioning_pagecontentversion_edit_redirect",
+            args=(version.pk,),
+        )
+        response = self.client.post(
+            url, headers={"referer": "http://testserver/de/pub-test/"}
+        )
+        # Not 405 — the POST reached the view untouched.
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response["Location"].startswith("/de/"),
+            f"expected /de/ Location after edit-redirect, got {response['Location']!r}",
+        )
+        # And it points at the placeholder edit endpoint of the en content.
+        self.assertIn("/edit/", response["Location"])
 
 
 class AutoCreateDefaultLanguageDraftTests(TestCase):
@@ -523,6 +733,37 @@ class AutoCreateDefaultLanguageDraftTests(TestCase):
         )
         self.assertEqual(en_drafts_after.count(), 1)
         self.assertEqual(en_drafts_after.first().object_id, sibling.pk)
+
+    def test_helper_returns_none_when_edit_redirect_check_denies(self):
+        """``check_edit_redirect`` denial (draft locked by someone else,
+        wrong state, …): no draft is auto-created and the helper returns
+        None — the middleware then silently no-ops."""
+        from djangocms_versioning import constants as v_const
+        from djangocms_versioning.exceptions import ConditionFailed
+        from djangocms_versioning.models import Version
+
+        post, published_en, de = self._make_post_with_published_en_and_draft_de()
+
+        with mock.patch.object(
+            Version,
+            "check_edit_redirect",
+            mock.Mock(side_effect=ConditionFailed("locked")),
+        ):
+            sibling = utils.get_default_language_editable_sibling(de, self.user)
+
+        self.assertIsNone(sibling)
+        # No DRAFT got created as a side effect.
+        ct = ContentType.objects.get_for_model(BlogPostContent)
+        en_pks = list(
+            BlogPostContent._base_manager.filter(post=post, language="en").values_list(
+                "pk", flat=True
+            )
+        )
+        self.assertFalse(
+            Version.objects.filter(
+                content_type=ct, object_id__in=en_pks, state=v_const.DRAFT
+            ).exists()
+        )
 
     def test_middleware_redirects_to_auto_created_draft(self):
         post, published_en, de = self._make_post_with_published_en_and_draft_de()
@@ -724,6 +965,28 @@ class CascadePublishLanguageSiblingsTests(TestCase):
         self.assertEqual(self._state_of(de_published), v_const.UNPUBLISHED)
         self.assertEqual(self._state_of(fr_published), v_const.UNPUBLISHED)
 
+    def test_sibling_publish_failure_does_not_break_original_publish(self):
+        """The 'never let a sibling failure break the original publish'
+        promise: a ConditionFailed (or any exception) from a cascaded
+        sibling publish is swallowed; the original publish completes."""
+        from djangocms_versioning import constants as v_const
+        from djangocms_versioning.exceptions import ConditionFailed
+
+        post = BlogPost.objects.create(name="failing-cascade-post")
+        en_published, en_draft = self._publish_then_redraft(post, "en", "Hello")
+
+        failing_draft = mock.Mock()
+        failing_draft.publish.side_effect = ConditionFailed("locked")
+        with mock.patch(
+            "djangocms_misc.global_untranslated_placeholder.signals"
+            ".iter_cascade_targets",
+            return_value=iter([("de", failing_draft)]),
+        ):
+            en_draft.publish(self.user)  # must not raise
+
+        failing_draft.publish.assert_called_once_with(self.user)
+        self.assertEqual(self._state_of(en_draft), v_const.PUBLISHED)
+
 
 class PluginLanguageSignalTests(TestCase):
     """Step 7: pre_save signal pins CMSPlugin.language to the default
@@ -835,6 +1098,16 @@ class PageContentNoVersioningFallbackTests(TestCase):
         self.assertIsNotNone(sibling)
         self.assertEqual(sibling.pk, en_pc.pk)
 
+        # The editable-sibling helper has the same fallback branch (no
+        # auto-create-draft without versioning — just page+language filter).
+        with mock.patch.object(utils, "_versioning_installed", return_value=False):
+            editable = utils.get_default_language_editable_sibling(
+                de_pc,
+                get_user_model().objects.first(),
+            )
+        self.assertIsNotNone(editable)
+        self.assertEqual(editable.pk, en_pc.pk)
+
 
 @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
 class AddonDisabledTests(TestCase):
@@ -845,6 +1118,23 @@ class AddonDisabledTests(TestCase):
         post, en, de, en_ph, de_ph = _make_blogpost_with_languages()
         self.assertEqual(_resolve_default_placeholder(de_ph).pk, de_ph.pk)
         self.assertIsNone(utils.get_default_language_sibling(de))
+
+
+class SettingParsingTests(TestCase):
+    """``DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS`` value handling, as
+    documented in the README quick start."""
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=True)
+    def test_true_falls_back_to_language_code(self):
+        self.assertEqual(utils.get_untranslated_default_language_if_enabled(), "en")
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS="de")
+    def test_explicit_language_code(self):
+        self.assertEqual(utils.get_untranslated_default_language_if_enabled(), "de")
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=False)
+    def test_false_disables(self):
+        self.assertIsNone(utils.get_untranslated_default_language_if_enabled())
 
 
 class AppReadyConfigCheckTests(TestCase):

@@ -171,7 +171,7 @@ INTERNAL_APPS = [
     "djangocms_misc.global_untranslated_placeholder",
     "djangocms_misc.basic",
     "djangocms_misc.admin_style",
-    # "djangocms_misc.alternate_toolbar",
+    "djangocms_misc.alternate_toolbar",
     "djangocms_misc.tests.test_app",
 ]
 
