@@ -127,7 +127,7 @@ working in.**
 ```
 __call__ (response phase):
   staff GET on a frontend URL (/de/<page>/)    — write session[SESSION_LANGUAGE_KEY] = 'de'
-  that rendered successfully (200/304)
+  that rendered successfully (no redirect/error)
 
 process_view (GET render endpoints):
   cms_placeholder_render_object_edit           — session-language redirect (XHR only),
@@ -143,9 +143,9 @@ __call__ (response phase, POST-only versioning actions):
 **Session write rule** (`_store_session_language`). The value is written
 ONLY on deliberate, successful frontend navigation: an authenticated
 **staff** GET on a **non-admin** URL with a valid language prefix whose
-response actually rendered (**200/304** — checked after `get_response`,
-so requests that end in a redirect, e.g. CMS's language-fallback
-redirect, or an error page never write). Consequences:
+response actually rendered (success status — checked after
+`get_response`, so requests that end in a redirect, e.g. CMS's
+language-fallback redirect, or an error page never write). Consequences:
 
 - Corrupted admin/endpoint URLs (the ones the read paths fix) can never
   poison the session. A Referer-based variant existed before; the

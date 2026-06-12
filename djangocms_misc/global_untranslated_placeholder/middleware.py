@@ -149,7 +149,8 @@ class EditModeDefaultLanguageMiddleware:
         """Record the editor's working language in the session — ONLY on
         deliberate, successful frontend navigation: a staff GET on a
         non-admin URL with a valid language prefix that actually rendered
-        (200/304). Admin/endpoint URLs (the corrupted ones we rewrite
+        (success status, not a redirect). Admin/endpoint URLs (the
+        corrupted ones we rewrite
         elsewhere) can never poison the session; neither can requests
         that end in a redirect (e.g. CMS's language-fallback redirect)
         or an error page. Language switching happens via the frontend's
