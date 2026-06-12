@@ -57,7 +57,7 @@ it's pointed at the **default-language content**. Concretely:
 | Editing on `/de/<page>/?edit` | The middleware rewrites the URL to point at the en object id (URL prefix `/de/` is preserved); the editor edits the en placeholders directly. |
 | Edit URL when only en PUBLISHED exists | A new en DRAFT is auto-created via `Version.copy(user)` (same code path as the toolbar's "New Draft" button), and the editor lands on the new draft. |
 | Programmatic `cms.api.add_plugin(de_placeholder, ..., language='de')` | The plugin's `language` is force-pinned to `en` by a `pre_save` signal (defense in depth). |
-| Toolbar actions (Edit / Neuer Entwurf, publish, unpublish, revert, archive, discard) | These POST-only views redirect to URLs built from `content.language` (always en), and the button URLs themselves can carry the wrong prefix (`reverse(...)` under `force_language(toolbar_language)`). The middleware rewrites the **response** Location's leading `/<lang>/` to match the HTTP Referer — the URL the editor was actually on. |
+| Toolbar actions (Edit / Neuer Entwurf, publish, unpublish, revert, archive, discard) | These POST-only views redirect to URLs built from `content.language` (always en), and the button URLs themselves can carry the wrong prefix (`reverse(...)` under `force_language(toolbar_language)`). The middleware rewrites the **response** Location's leading `/<lang>/` to match the editor's working language, stored in the session. |
 | Publishing the en content | Every other-language `PageContent` for the same page that has BOTH a DRAFT and an existing PUBLISHED Version is also published. New-but-unpublished languages are left alone. |
 
 The addon generalizes beyond `PageContent` to **any** content model registered
@@ -120,38 +120,62 @@ keeps the URL prefix correct now — see `middleware.py` below.
 
 ### 2. `middleware.py` — edit-mode URL redirect
 
-`EditModeDefaultLanguageMiddleware` does three things:
+`EditModeDefaultLanguageMiddleware` is built around one idea: **the
+session is the single source of truth for the language the editor is
+working in.**
 
 ```
+__call__ (response phase):
+  staff GET on a frontend URL (/de/<page>/)    — write session[SESSION_LANGUAGE_KEY] = 'de'
+  that rendered successfully (200/304)
+
 process_view (GET render endpoints):
-  cms_placeholder_render_object_edit            — Referer-language redirect (XHR only),
-  cms_placeholder_render_object_structure        then object-id swap (auto-create-draft)
-  cms_placeholder_render_object_preview         — Referer-language redirect (any request),
-                                                  then object-id swap (strict state-match)
+  cms_placeholder_render_object_edit           — session-language redirect (XHR only),
+  cms_placeholder_render_object_structure       then object-id swap (auto-create-draft)
+  cms_placeholder_render_object_preview        — session-language redirect (any request),
+                                                 then object-id swap (strict state-match)
 
 __call__ (response phase, POST-only versioning actions):
-  *_edit_redirect / *_publish / *_unpublish     — rewrite redirect Location to Referer's language
-  *_revert / *_archive / *_discard                (LANGUAGE_REDIRECT_URL_SUFFIXES)
+  *_edit_redirect / *_publish / *_unpublish    — rewrite redirect Location to session language
+  *_revert / *_archive / *_discard               (LANGUAGE_REDIRECT_URL_SUFFIXES)
 ```
+
+**Session write rule** (`_store_session_language`). The value is written
+ONLY on deliberate, successful frontend navigation: an authenticated
+**staff** GET on a **non-admin** URL with a valid language prefix whose
+response actually rendered (**200/304** — checked after `get_response`,
+so requests that end in a redirect, e.g. CMS's language-fallback
+redirect, or an error page never write). Consequences:
+
+- Corrupted admin/endpoint URLs (the ones the read paths fix) can never
+  poison the session. A Referer-based variant existed before; the
+  Referer faithfully reports the poisoned address bar after the
+  structure board's `history.replaceState` — the session does not.
+- Language switching happens through the frontend's language links:
+  visiting `/en/<page>/` updates the session to `'en'`.
+- Anonymous visitors never get a session written (no session-cookie
+  churn / cache busting on the public site).
 
 **Placeholder edit/structure/preview URLs.** Two steps, in order:
 
-1. *Referer-language redirect* (`_redirect_to_referer_language`). The
-   CMS URL helpers apply `language = getattr(obj, "language", language)`
-   (object trumps parameter), so on `/de/.../edit/<en_pk>/` the
-   toolbar's Preview button, the Structure/Content switcher, and the
-   `CMS.config` `edit`/`edit_off`/`structure` URLs (used by the
-   post-save structure-board XHR reload) all come out as `/en/...`.
-   When the request's URL prefix differs from the Referer's language,
-   302 to the same path under the Referer's language — safe for these
-   GET endpoints (no POST→GET method change). Edit and structure URLs
-   are only rewritten for **XHR** requests (`X-Requested-With:
-   XMLHttpRequest`, or `Sec-Fetch-Mode` other than `navigate`) — a
-   top-level navigation to an edit URL may be deliberate. Preview URLs
-   are rewritten for **any** request; the toolbar language menu (which
-   links to other languages' preview URLs) consequently can't switch
-   languages anymore — acceptable under this addon, since every
-   language renders the same default-language plugins anyway.
+1. *Session-language redirect* (`_redirect_to_session_language` — THE
+   language-prefix helper). The CMS URL helpers apply
+   `language = getattr(obj, "language", language)` (object trumps
+   parameter), so on `/de/.../edit/<en_pk>/` the toolbar's Preview
+   button, the Structure/Content switcher, and the `CMS.config`
+   `edit`/`edit_off`/`structure` URLs (used by the post-save
+   structure-board XHR reload, and pushed into the address bar by
+   `history.replaceState` when toggling structure mode) all come out
+   as `/en/...`. When the request's URL prefix differs from the
+   session language, 302 to the same path under the session language —
+   safe for these GET endpoints (no POST→GET method change). Edit and
+   structure URLs are only rewritten for **XHR** requests
+   (`X-Requested-With: XMLHttpRequest`, or `Sec-Fetch-Mode` other than
+   `navigate`) — a top-level navigation to an edit URL may be
+   deliberate. Preview URLs are rewritten for **any** request; the
+   toolbar language menu (which links to other languages' preview
+   URLs) consequently can't switch languages — switching happens via
+   frontend language links.
 
 2. *Object-id swap.* When the targeted object's language is not the
    default, rewrite the trailing `object_id` in `request.path` (the
@@ -175,18 +199,19 @@ We can't 302 the inbound POST — a 302 would convert POST→GET and
 versioning would return 405. The middleware instead rewrites the
 **response** Location: when the response is a 3xx for one of these
 action URL names and its Location's leading language segment differs
-from the HTTP Referer's, we swap the Location's leading `/<lang>/` to
-match the Referer's. **The Referer is the single source of truth** —
-it's the URL the editor was on when they clicked the action button.
-For Edit / Neuer Entwurf this means the POST goes straight through
-versioning's `edit_redirect_view` (no inbound interference), and only
-the outgoing `/<en>/.../edit/<en_pk>/` Location is swapped to
-`/<referer_lang>/.../edit/<en_pk>/`.
+from the **session language**, we swap the Location's leading
+`/<lang>/` to match the session. For Edit / Neuer Entwurf this means
+the POST goes straight through versioning's `edit_redirect_view` (no
+inbound interference), and only the outgoing `/en/.../edit/<en_pk>/`
+Location is swapped to `/<session_lang>/.../edit/<en_pk>/`. This
+rewrite also matters for `ON_PUBLISH_REDIRECT="published"`, where the
+Location is a frontend URL — landing on `/en/<slug>/` unrewritten
+would flip the session on the very next request.
 
 No-op when: the URL name doesn't match, the response is not a 3xx,
-the Location has no recognised leading language segment, the Referer
-is missing/unparseable/has no recognised leading language, or the
-Referer's language already matches the Location's.
+the Location has no recognised leading language segment, no (valid)
+session language is stored, or the session language already matches
+the Location's.
 
 For edit and structure URLs, the swap target is computed by
 `get_default_language_editable_sibling(content, user)`:
@@ -343,6 +368,15 @@ sync with the default language's publish cycle.
   consumers like `django-modeltranslation` read to pick the right
   translation tab. Using `reverse()` (which would re-prefix the URL with
   `/en/`) is deliberately avoided.
+- **The session is the language source of truth.** Written only on
+  deliberate frontend navigation (staff GET, non-admin URL, valid
+  prefix); read by every rewrite path. This survives the structure
+  board's `history.replaceState` (which silently flips the address
+  bar — and thereby the Referer — to the default-language URL baked
+  into `CMS.config.settings`): no request happens during
+  `replaceState`, so the session keeps the editor's real language.
+  Multi-tab caveat: one value per editor — the last frontend
+  navigation wins across tabs.
 - **Versioning action redirect targets** (Edit / Neuer Entwurf,
   publish, unpublish, revert, archive, discard). These views are
   POST-only and their post-action redirect URLs are built from
@@ -353,18 +387,17 @@ sync with the default language's publish cycle.
   We can't 302 the inbound POST (a 302 → GET would yield a 405). The
   middleware rewrites the **response** Location instead: when the
   response is a 3xx and its Location's leading language segment
-  differs from the HTTP Referer's leading language segment, swap
-  Location's leading `/<lang>/` to match the Referer. The Referer is
-  the single source of truth — it's where the editor was when they
-  clicked the action button. We do NOT touch `toolbar_language`
+  differs from the session language, swap Location's leading
+  `/<lang>/` to match the session. We do NOT touch `toolbar_language`
   itself — it remains a user preference for the toolbar UI.
 - **Toolbar GET URLs (Preview button, mode switcher, XHR reload).**
   Same wrong-prefix problem, handled inbound (safe for GET): requests
   to the placeholder render endpoints whose URL prefix differs from
-  the Referer's language are 302'd to the Referer's language — edit
+  the session language are 302'd to the session language — edit
   and structure only when the request is an XHR, preview always. The
   known trade-off: the toolbar language menu links to other languages'
-  preview URLs, so it can no longer switch languages.
+  preview URLs, so it can't switch languages — the frontend's language
+  links are the way to switch (they update the session).
 - **No live data mutation.** The editable-sibling lookup never returns
   a PUBLISHED content. CMS's own check `object_is_editable()` would
   redirect a PUBLISHED edit to a read-only preview; auto-create-draft

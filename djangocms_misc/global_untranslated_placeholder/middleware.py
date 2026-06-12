@@ -42,9 +42,8 @@ EDIT_URL_NAMES = EDITABLE_URL_NAMES | PREVIEW_URL_NAMES
 # are POST-only (admin.py returns 405 to GET) and a 302 would convert
 # POST→GET. So we fix it from the response side instead: when the response
 # is a 3xx and its Location's leading language segment differs from the
-# HTTP Referer's, rewrite the Location to the Referer's language. The
-# Referer is the single source of truth — it tells us which language URL
-# the editor was on when they clicked the action button.
+# editor's working language stored in the session, rewrite the Location
+# to the session language.
 LANGUAGE_REDIRECT_URL_SUFFIXES = (
     "_edit_redirect",
     "_publish",
@@ -53,6 +52,16 @@ LANGUAGE_REDIRECT_URL_SUFFIXES = (
     "_archive",
     "_discard",
 )
+
+# The session is the single source of truth for "the language the editor
+# is working in". It is written ONLY on deliberate frontend navigation
+# (staff GET on a non-admin URL with a language prefix), so corrupted
+# admin/endpoint URLs — e.g. the structure board's history.replaceState
+# with a default-language URL, or toolbar buttons reversed under
+# force_language(toolbar_language) — can never poison it. (A Referer-based
+# variant existed before; the Referer faithfully reports the poisoned
+# address bar after history.replaceState, the session does not.)
+SESSION_LANGUAGE_KEY = "untranslated_editor_language"
 
 _REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 
@@ -84,15 +93,18 @@ def _swap_leading_language(path, new_lang, language_list):
     return path
 
 
-def _referer_language(request, language_list):
-    """The language the editor was on, read from the HTTP Referer's URL
-    path. Returns ``None`` when the Referer is missing, unparseable, or
-    its path has no recognised leading language segment.
+def _session_language(request, language_list):
+    """The language the editor is working in, read from the session.
+    Returns ``None`` when there's no session, no stored value, or the
+    stored value is not a configured language.
     """
-    referer = request.headers.get("referer", "")
-    if not referer:
+    session = getattr(request, "session", None)
+    if session is None:
         return None
-    return _extract_leading_language(urlparse(referer).path, language_list)
+    language = session.get(SESSION_LANGUAGE_KEY)
+    if language in language_list:
+        return language
+    return None
 
 
 def _is_xhr(request):
@@ -130,27 +142,64 @@ class EditModeDefaultLanguageMiddleware:
         response = self.get_response(request)
         if get_untranslated_default_language_if_enabled():
             self._rewrite_redirect_location_language(request, response)
+            self._store_session_language(request, response)
         return response
+
+    def _store_session_language(self, request, response):
+        """Record the editor's working language in the session — ONLY on
+        deliberate, successful frontend navigation: a staff GET on a
+        non-admin URL with a valid language prefix that actually rendered
+        (200/304). Admin/endpoint URLs (the corrupted ones we rewrite
+        elsewhere) can never poison the session; neither can requests
+        that end in a redirect (e.g. CMS's language-fallback redirect)
+        or an error page. Language switching happens via the frontend's
+        language links.
+
+        Staff-only so anonymous visitors never get a session written
+        (session-cookie churn, cache busting on the public site).
+        """
+        if response.status_code not in (200, 201, 202, 304):
+            return
+        if request.method not in ("GET", "HEAD"):
+            return
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated or not user.is_staff:
+            return
+        session = getattr(request, "session", None)
+        if session is None:
+            return
+
+        from cms.utils.i18n import get_language_list
+
+        language_list = list(get_language_list())
+        language = _extract_leading_language(request.path, language_list)
+        if language is None:
+            return
+        if request.path.startswith(f"/{language}/admin/"):
+            return
+        if session.get(SESSION_LANGUAGE_KEY) != language:
+            session[SESSION_LANGUAGE_KEY] = language
 
     def _rewrite_redirect_location_language(self, request, response):
         """When the response of a versioning admin action endpoint
         (``_edit_redirect`` / ``_publish`` / ``_unpublish`` / ``_revert`` /
         ``_archive`` / ``_discard``) is a redirect whose Location language
-        prefix differs from the Referer's, rewrite Location's leading
-        language segment to match the Referer.
+        prefix differs from the editor's session language, rewrite
+        Location's leading language segment to match the session.
 
-        The Referer is the source of truth — it's the URL the editor was
-        on when they POSTed the action. Versioning's post-action redirect
-        targets are built from ``content.language``, which under this
-        addon is always the default and so always wrong when the editor
-        was on a non-default prefix.
+        Versioning's post-action redirect targets are built from
+        ``content.language``, which under this addon is always the
+        default and so always wrong when the editor works on a
+        non-default prefix. With ``ON_PUBLISH_REDIRECT="published"`` the
+        Location is even a frontend URL — landing there unrewritten would
+        also flip the session on the next request.
 
         No-op when:
         - URL name doesn't match the suffixes
         - Response is not a 3xx
         - Location is missing or has no recognised language prefix
-        - Referer is missing or has no recognised language prefix
-        - Referer's language already matches Location's language
+        - No (valid) session language stored
+        - Session language already matches Location's language
         """
         resolver_match = getattr(request, "resolver_match", None)
         if resolver_match is None:
@@ -173,7 +222,7 @@ class EditModeDefaultLanguageMiddleware:
         if location_lang is None:
             return
 
-        intended_lang = _referer_language(request, language_list)
+        intended_lang = _session_language(request, language_list)
         if intended_lang is None or intended_lang == location_lang:
             return
 
@@ -198,7 +247,7 @@ class EditModeDefaultLanguageMiddleware:
 
         url_name = resolver_match.url_name or ""
         if url_name in EDIT_URL_NAMES:
-            response = self._redirect_to_referer_language(request, url_name)
+            response = self._redirect_to_session_language(request, url_name)
             if response is not None:
                 return response
             return self._handle_placeholder_object_redirect(
@@ -207,28 +256,30 @@ class EditModeDefaultLanguageMiddleware:
 
         return None
 
-    def _redirect_to_referer_language(self, request, url_name):
-        """Inbound counterpart of the Location rewrite, for the GET render
-        endpoints (placeholder edit/structure/preview): when the request's
-        URL prefix differs from the Referer's language, 302 to the same
-        path under the Referer's language. Safe here because these are
-        GET endpoints — no POST→GET method change.
+    def _redirect_to_session_language(self, request, url_name):
+        """THE language-prefix helper: read the editor's working language
+        from the session; when the request URL's leading language prefix
+        differs, return a redirect to the same path (query string
+        preserved) under the session language. Returns ``None`` when
+        there's nothing to do. Safe for these GET render endpoints — no
+        POST→GET method change.
 
         This catches toolbar-built URLs that carry the wrong prefix: the
         CMS helpers apply ``language = getattr(obj, "language", language)``
         (object trumps parameter), so on ``/de/.../edit/<en_pk>/`` the
         Preview button, the Structure/Content switcher, and the
         ``CMS.config`` ``edit``/``edit_off``/``structure`` URLs (used by
-        the post-save structure-board XHR reload) all come out as
-        ``/en/...``.
+        the post-save structure-board XHR reload, and pushed into the
+        address bar by ``history.replaceState`` when toggling structure
+        mode) all come out as ``/en/...``.
 
         Edit and structure URLs are only rewritten for XHR requests: the
         post-save reload is an XHR, while a top-level navigation to an
         edit URL may be deliberate. Preview URLs are rewritten for any
         request — the toolbar language menu (which links to other
-        languages' preview URLs) consequently can't switch languages
-        anymore, which is acceptable under this addon: all languages
-        render the same default-language plugins anyway.
+        languages' preview URLs) consequently can't switch languages;
+        switching happens via the frontend's language links, which update
+        the session.
         """
         from cms.utils.i18n import get_language_list
 
@@ -238,7 +289,7 @@ class EditModeDefaultLanguageMiddleware:
         if request_lang is None:
             return None
 
-        intended_lang = _referer_language(request, language_list)
+        intended_lang = _session_language(request, language_list)
         if intended_lang is None or intended_lang == request_lang:
             return None
 

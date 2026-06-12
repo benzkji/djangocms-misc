@@ -20,6 +20,7 @@ from djangocms_misc.global_untranslated_placeholder.apps import (
     GlobalUntranslatedPlaceholderConfig,
 )
 from djangocms_misc.global_untranslated_placeholder.middleware import (
+    SESSION_LANGUAGE_KEY,
     EditModeDefaultLanguageMiddleware,
 )
 from djangocms_misc.global_untranslated_placeholder.models import (
@@ -228,19 +229,20 @@ class EditUrlRedirectTests(TestCase):
         )
 
 
-class RefererLanguageGetRedirectTests(TestCase):
-    """Inbound Referer-driven language redirect on the placeholder GET
+class SessionLanguageGetRedirectTests(TestCase):
+    """Inbound session-driven language redirect on the placeholder GET
     render endpoints. The toolbar's Preview button, Structure/Content
     switcher, and the ``CMS.config`` URLs used by the post-save XHR
     reload all come out with ``obj.language``'s prefix (object trumps
     parameter in the CMS URL helpers), i.e. ``/en/...`` even when the
-    editor is on ``/de/``. When the Referer says the editor was on a
-    different language, redirect to the same path under that language.
+    editor works in de. The session is the source of truth: when the
+    stored working language differs from the request prefix, redirect to
+    the same path under the session language.
 
     Edit/structure URLs only for XHR requests (top-level navigation to
     an edit URL may be deliberate); preview URLs for any request — the
-    toolbar language menu loses the ability to switch languages, which
-    is acceptable under this addon."""
+    toolbar language menu loses the ability to switch languages;
+    switching happens via frontend language links (session writes)."""
 
     def setUp(self):
         super().setUp()
@@ -254,26 +256,29 @@ class RefererLanguageGetRedirectTests(TestCase):
             password="pw",
         )
 
-    def _process(self, path, url_name, referer=None, xhr=False, sec_fetch=None):
+    def _process(
+        self, path, url_name, session_language=None, xhr=False, sec_fetch=None
+    ):
         headers = {}
-        if referer is not None:
-            headers["HTTP_REFERER"] = referer
         if xhr:
             headers["HTTP_X_REQUESTED_WITH"] = "XMLHttpRequest"
         if sec_fetch is not None:
             headers["HTTP_SEC_FETCH_MODE"] = sec_fetch
         request = self.factory.get(path, **headers)
+        request.session = {}
+        if session_language is not None:
+            request.session[SESSION_LANGUAGE_KEY] = session_language
         request.resolver_match = mock.Mock(url_name=url_name)
         request.user = self.user
         # ct/object ids don't matter for the language redirect — it fires
         # before the object swap even looks at them.
         return self.middleware.process_view(request, None, ("1", "1"), {})
 
-    def test_xhr_edit_request_redirected_to_referer_language(self):
+    def test_xhr_edit_request_redirected_to_session_language(self):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/edit/7/",
             "cms_placeholder_render_object_edit",
-            referer="http://testserver/de/admin/cms/placeholder/object/13/edit/7/",
+            session_language="de",
             xhr=True,
         )
         self.assertIsNotNone(response)
@@ -286,7 +291,7 @@ class RefererLanguageGetRedirectTests(TestCase):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/structure/7/",
             "cms_placeholder_render_object_structure",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
             sec_fetch="cors",
         )
         self.assertIsNotNone(response)
@@ -301,7 +306,7 @@ class RefererLanguageGetRedirectTests(TestCase):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/edit/7/",
             "cms_placeholder_render_object_edit",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
             sec_fetch="navigate",
         )
         # Falls through to the object swap, which returns None here
@@ -315,7 +320,7 @@ class RefererLanguageGetRedirectTests(TestCase):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/preview/7/",
             "cms_placeholder_render_object_preview",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
             sec_fetch="navigate",
         )
         self.assertIsNotNone(response)
@@ -324,18 +329,26 @@ class RefererLanguageGetRedirectTests(TestCase):
             "/de/admin/cms/placeholder/object/13/preview/7/",
         )
 
-    def test_no_language_redirect_without_referer(self):
+    def test_no_language_redirect_without_session_value(self):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/preview/7/",
             "cms_placeholder_render_object_preview",
         )
         self.assertIsNone(response)
 
-    def test_no_language_redirect_when_referer_language_matches(self):
+    def test_no_language_redirect_when_session_language_matches(self):
         response = self._process(
             "/de/admin/cms/placeholder/object/13/preview/7/",
             "cms_placeholder_render_object_preview",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
+        )
+        self.assertIsNone(response)
+
+    def test_no_language_redirect_for_unknown_session_value(self):
+        response = self._process(
+            "/en/admin/cms/placeholder/object/13/preview/7/",
+            "cms_placeholder_render_object_preview",
+            session_language="xx",
         )
         self.assertIsNone(response)
 
@@ -343,7 +356,7 @@ class RefererLanguageGetRedirectTests(TestCase):
         response = self._process(
             "/en/admin/cms/placeholder/object/13/edit/7/?cms_path=/de/x/",
             "cms_placeholder_render_object_edit",
-            referer="http://testserver/de/x/",
+            session_language="de",
             xhr=True,
         )
         self.assertIsNotNone(response)
@@ -353,15 +366,15 @@ class RefererLanguageGetRedirectTests(TestCase):
         )
 
     def test_language_redirect_runs_before_object_swap(self):
-        """A de object requested under /en/ with a /de/ Referer (XHR):
-        the language redirect wins first; the object swap then happens
-        on the follow-up /de/ request."""
+        """A de object requested under /en/ with session language 'de'
+        (XHR): the language redirect wins first; the object swap then
+        happens on the follow-up /de/ request."""
         post, en, de, _, _ = _make_blogpost_with_languages()
         ct_id = ContentType.objects.get_for_model(BlogPostContent).id
         response = self._process(
             f"/en/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/",
             "cms_placeholder_render_object_edit",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
             xhr=True,
         )
         self.assertIsNotNone(response)
@@ -369,6 +382,103 @@ class RefererLanguageGetRedirectTests(TestCase):
             response["Location"],
             f"/de/admin/cms/placeholder/object/{ct_id}/edit/{de.pk}/",
         )
+
+
+class SessionLanguageWriteTests(TestCase):
+    """The session value is written ONLY on deliberate, successful
+    frontend navigation: staff GET on a non-admin URL with a valid
+    language prefix that rendered (200/304). Admin URLs, anonymous
+    visitors, redirects and error responses never write."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self._response_status = 200
+        self.middleware = EditModeDefaultLanguageMiddleware(
+            get_response=lambda r: mock.Mock(
+                status_code=self._response_status, get=lambda *a: ""
+            ),
+        )
+        self.staff = get_user_model().objects.create_superuser(
+            username="writer",
+            email="w@w.com",
+            password="pw",
+        )
+
+    def _call(self, path, user=None, method="get", session=None, status=200):
+        self._response_status = status
+        request = getattr(self.factory, method)(path)
+        request.session = session if session is not None else {}
+        request.user = user or self.staff
+        request.resolver_match = mock.Mock(url_name="whatever")
+        self.middleware(request)
+        return request.session
+
+    def test_staff_frontend_get_writes_session(self):
+        session = self._call("/de/some-page/")
+        self.assertEqual(session.get(SESSION_LANGUAGE_KEY), "de")
+
+    def test_admin_url_never_writes(self):
+        session = self._call("/en/admin/cms/placeholder/object/13/edit/7/")
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_anonymous_never_writes(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        session = self._call("/de/some-page/", user=AnonymousUser())
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_non_staff_never_writes(self):
+        plain = get_user_model().objects.create_user(
+            username="plain", email="pl@pl.com", password="pw"
+        )
+        session = self._call("/de/some-page/", user=plain)
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_post_never_writes(self):
+        session = self._call("/de/some-page/", method="post")
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_no_language_prefix_never_writes(self):
+        session = self._call("/some-page/")
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_redirect_response_never_writes(self):
+        """A frontend URL that ends in a redirect (e.g. CMS's
+        language-fallback redirect to another language) is not a page
+        the editor actually saw — don't store its language."""
+        session = self._call("/de/some-page/", status=302)
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_error_response_never_writes(self):
+        session = self._call("/de/some-typo/", status=404)
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
+
+    def test_not_modified_response_writes(self):
+        """304 means the browser re-validated a cached page the editor is
+        looking at — that counts as a successful page view."""
+        session = self._call("/de/some-page/", status=304)
+        self.assertEqual(session.get(SESSION_LANGUAGE_KEY), "de")
+
+    def test_unchanged_value_not_rewritten(self):
+        """No session churn: writing the same value again is skipped (a
+        real SessionBase would mark itself modified on every set)."""
+
+        class TrackingDict(dict):
+            modified = False
+
+            def __setitem__(self, key, value):
+                self.modified = True
+                super().__setitem__(key, value)
+
+        session = TrackingDict({SESSION_LANGUAGE_KEY: "de"})
+        self._call("/de/some-page/", session=session)
+        self.assertFalse(session.modified)
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_no_write_when_addon_disabled(self):
+        session = self._call("/de/some-page/")
+        self.assertNotIn(SESSION_LANGUAGE_KEY, session)
 
 
 class VersioningActionUrlPrefixTests(TestCase):
@@ -381,8 +491,8 @@ class VersioningActionUrlPrefixTests(TestCase):
 
     We can't 302 the inbound POST itself — these endpoints are POST-only
     and a 302 would convert POST→GET, yielding 405. We rewrite the
-    response Location instead. The Referer is the source of truth — it's
-    the URL the editor was on when they clicked the action button."""
+    response Location instead. The session is the source of truth — it
+    holds the language the editor is working in."""
 
     def setUp(self):
         super().setUp()
@@ -392,7 +502,7 @@ class VersioningActionUrlPrefixTests(TestCase):
         )
         self._stub_response = None
 
-    def _run(self, path, location, url_name, referer=None, status=302):
+    def _run(self, path, location, url_name, session_language=None, status=302):
         from django.http import HttpResponse, HttpResponseRedirect
 
         if location is None:
@@ -406,76 +516,77 @@ class VersioningActionUrlPrefixTests(TestCase):
 
         request = self.factory.post(path)
         request.resolver_match = mock.Mock(url_name=url_name)
-        if referer is not None:
-            request.META["HTTP_REFERER"] = referer
+        request.session = {}
+        if session_language is not None:
+            request.session[SESSION_LANGUAGE_KEY] = session_language
         # The middleware calls get_response, which our setUp wired to
         # return self._stub_response.
         return self.middleware(request)
 
-    def test_publish_response_location_rewritten_to_referer_language(self):
-        """Case 1 from the plan: toolbar_language='en', editor on /de/.
-        Inbound is /en/.../publish/, Referer is /de/<page>/edit/.
-        Location /en/.../preview/<pk>/ is rewritten to /de/.../preview/<pk>/."""
+    def test_publish_response_location_rewritten_to_session_language(self):
+        """toolbar_language='en', editor works in de (session). Inbound is
+        /en/.../publish/; Location /en/.../preview/<pk>/ is rewritten to
+        /de/.../preview/<pk>/."""
         response = self._run(
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/some-page/?edit",
+            session_language="de",
         )
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
         )
 
-    def test_publish_response_location_rewritten_when_request_matches_referer(
+    def test_publish_response_location_rewritten_when_request_matches_session(
         self,
     ):
-        """Case 2 from the plan: toolbar_language='de', editor on /de/.
-        Inbound is /de/.../publish/, Referer is /de/<page>/.
-        Location /en/.../preview/<pk>/ is still rewritten to /de/... because
-        the rule keys off Referer→Location mismatch, not request→Location."""
+        """toolbar_language='de', editor works in de. Inbound is
+        /de/.../publish/; Location /en/.../preview/<pk>/ is still rewritten
+        to /de/... because the rule keys off session→Location mismatch,
+        not request→Location."""
         response = self._run(
             path="/de/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
         )
         self.assertEqual(
             response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
         )
 
-    def test_publish_response_no_rewrite_when_intended_matches_location(self):
+    def test_publish_response_no_rewrite_when_session_matches_location(self):
         response = self._run(
             path="/de/admin/cms/pagecontentversion/42/publish/",
             location="/de/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/some-page/",
+            session_language="de",
         )
         self.assertEqual(
             response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
         )
 
-    def test_publish_response_no_rewrite_when_referer_missing(self):
-        """Referer is the sole source of truth — when it's missing, no
-        rewrite (the editor gets upstream's default behavior)."""
+    def test_publish_response_no_rewrite_without_session_value(self):
+        """The session is the sole source of truth — with no stored value,
+        no rewrite (the editor gets upstream's default behavior)."""
         response = self._run(
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer=None,
+            session_language=None,
         )
         self.assertEqual(
             response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
         )
 
-    def test_publish_response_no_rewrite_when_referer_path_has_no_known_language(
+    def test_publish_response_no_rewrite_for_unknown_session_value(
         self,
     ):
         response = self._run(
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/some/path/",
+            session_language="xx",
         )
         self.assertEqual(
             response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
@@ -488,7 +599,7 @@ class VersioningActionUrlPrefixTests(TestCase):
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/admin/something/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/page/",
+            session_language="de",
         )
         self.assertEqual(response["Location"], "/admin/something/")
 
@@ -497,7 +608,7 @@ class VersioningActionUrlPrefixTests(TestCase):
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/page/",
+            session_language="de",
             status=200,
         )
         # 200 response → no Location rewrite.
@@ -511,7 +622,7 @@ class VersioningActionUrlPrefixTests(TestCase):
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/something/?next=/en/&x=1#frag",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/page/",
+            session_language="de",
         )
         self.assertEqual(
             response["Location"], "/de/admin/something/?next=/en/&x=1#frag"
@@ -528,7 +639,7 @@ class VersioningActionUrlPrefixTests(TestCase):
                     path=f"/en/admin/cms/pagecontentversion/42/{url_segment}/",
                     location="/en/admin/cms/placeholder/object/13/edit/7/",
                     url_name=f"cms_pagecontentversion_{suffix}",
-                    referer="http://testserver/de/page/",
+                    session_language="de",
                 )
                 self.assertEqual(
                     response["Location"],
@@ -540,7 +651,7 @@ class VersioningActionUrlPrefixTests(TestCase):
             path="/en/admin/cms/something/",
             location="/en/admin/elsewhere/",
             url_name="cms_something_changelist",
-            referer="http://testserver/de/page/",
+            session_language="de",
         )
         # No suffix match → Location untouched.
         self.assertEqual(response["Location"], "/en/admin/elsewhere/")
@@ -551,7 +662,7 @@ class VersioningActionUrlPrefixTests(TestCase):
             path="/en/admin/cms/pagecontentversion/42/publish/",
             location="/en/admin/cms/placeholder/object/13/preview/7/",
             url_name="cms_pagecontentversion_publish",
-            referer="http://testserver/de/page/",
+            session_language="de",
         )
         self.assertEqual(
             response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
@@ -574,6 +685,11 @@ class VersioningActionEndToEndTests(TestCase):
         )
         self.client.force_login(self.user)
 
+    def _set_session_language(self, language):
+        session = self.client.session
+        session[SESSION_LANGUAGE_KEY] = language
+        session.save()
+
     def _draft_version(self):
         from cms.api import create_page
         from cms.models import PageContent
@@ -591,16 +707,15 @@ class VersioningActionEndToEndTests(TestCase):
             args=(version.pk,),
         )
 
-    def test_publish_redirect_rewritten_to_referer_language(self):
+    def test_publish_redirect_rewritten_to_session_language(self):
         version = self._draft_version()
         url = self._publish_url(version)
         # The registered URL name must match the middleware's suffix tuple,
         # otherwise this whole mechanism silently never fires.
         self.assertTrue(url.endswith(f"/{version.pk}/publish/"), url)
 
-        response = self.client.post(
-            url, headers={"referer": "http://testserver/de/pub-test/?edit"}
-        )
+        self._set_session_language("de")
+        response = self.client.post(url)
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(
@@ -614,23 +729,23 @@ class VersioningActionEndToEndTests(TestCase):
 
         self.assertEqual(Version.objects.get(pk=version.pk).state, v_const.PUBLISHED)
 
-    def test_publish_redirect_untouched_without_referer(self):
+    def test_publish_redirect_untouched_without_session_value(self):
         version = self._draft_version()
         response = self.client.post(self._publish_url(version))
         self.assertEqual(response.status_code, 302)
-        # Referer missing → no rewrite; versioning's own Location, built
+        # No session value → no rewrite; versioning's own Location, built
         # from content.language='en', stays.
         self.assertTrue(
             response["Location"].startswith("/en/"),
             f"got {response['Location']!r}",
         )
 
-    def test_edit_redirect_rewritten_to_referer_language(self):
-        """Regression for the POST-only hazard: the earlier inbound-302
-        handler for ``*_edit_redirect`` would have converted the browser's
-        POST to GET → 405. With the unified response-side rewrite the POST
-        goes straight through versioning's ``edit_redirect_view`` and only
-        the outgoing Location is touched."""
+    def test_edit_redirect_rewritten_to_session_language(self):
+        """Regression for the POST-only hazard: an inbound-302 handler for
+        ``*_edit_redirect`` would convert the browser's POST to GET → 405.
+        With the response-side rewrite the POST goes straight through
+        versioning's ``edit_redirect_view`` and only the outgoing Location
+        is touched."""
         from django.urls import reverse
 
         version = self._draft_version()
@@ -638,9 +753,8 @@ class VersioningActionEndToEndTests(TestCase):
             "admin:djangocms_versioning_pagecontentversion_edit_redirect",
             args=(version.pk,),
         )
-        response = self.client.post(
-            url, headers={"referer": "http://testserver/de/pub-test/"}
-        )
+        self._set_session_language("de")
+        response = self.client.post(url)
         # Not 405 — the POST reached the view untouched.
         self.assertEqual(response.status_code, 302)
         self.assertTrue(
