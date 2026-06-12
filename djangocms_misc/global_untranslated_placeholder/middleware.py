@@ -25,6 +25,23 @@ PREVIEW_URL_NAMES = {
 
 EDIT_URL_NAMES = EDITABLE_URL_NAMES | PREVIEW_URL_NAMES
 
+# djangocms-versioning registers per-versionable admin URL names of the form
+# ``<app_label>_<modelversion>_<action>``. The toolbar's Edit / Neuer Entwurf
+# button builds its href via ``reverse()`` under ``force_language(toolbar_
+# language)`` — which is the user's UI-language preference, NOT the URL
+# prefix the editor is currently looking at. Result: editor on ``/de/`` whose
+# user_settings.language is ``'en'`` sees a button URL on ``/en/...``, clicks
+# it, and the whole flow flips to English.
+#
+# We catch this here: when the URL prefix of the incoming edit-redirect
+# request doesn't match the language baked into the version's content
+# (``version.content.language``), redirect to the same URL under the right
+# prefix. From there, versioning's own ``edit_redirect_view`` runs under the
+# right ``request_language`` and our patched ``get_editable_url`` lands the
+# editor on ``/<right_prefix>/.../edit/<en_pk>/`` via the regular
+# placeholder-edit middleware below.
+VERSIONING_EDIT_REDIRECT_URL_SUFFIX = "_edit_redirect"
+
 
 class EditModeDefaultLanguageMiddleware:
     """
@@ -51,7 +68,14 @@ class EditModeDefaultLanguageMiddleware:
             return None
 
         resolver_match = getattr(request, "resolver_match", None)
-        if resolver_match is None or resolver_match.url_name not in EDIT_URL_NAMES:
+        if resolver_match is None:
+            return None
+
+        url_name = resolver_match.url_name or ""
+        if url_name.endswith(VERSIONING_EDIT_REDIRECT_URL_SUFFIX):
+            return self._handle_versioning_edit_redirect(request, view_args)
+
+        if url_name not in EDIT_URL_NAMES:
             return None
 
         try:
@@ -105,3 +129,55 @@ class EditModeDefaultLanguageMiddleware:
         if query_string:
             new_path = f"{new_path}?{query_string}"
         return HttpResponseRedirect(new_path)
+
+    def _handle_versioning_edit_redirect(self, request, view_args):
+        """When the toolbar's Edit / Neuer Entwurf button produced a URL on
+        the wrong language prefix (because ``force_language(toolbar_language)``
+        in ``_call_toolbar`` activated the user's UI-language preference
+        instead of the URL-prefix language), redirect to the same URL under
+        the language the version's content lives in.
+
+        The Version's content has a ``language`` attribute — that's our
+        ground truth. If ``request.path`` doesn't start with
+        ``/<content.language>/``, rewrite the leading language segment.
+        """
+        try:
+            version_id = int(view_args[0])
+        except (IndexError, ValueError, TypeError):
+            return None
+
+        try:
+            from djangocms_versioning.models import Version
+        except ImportError:
+            return None
+
+        try:
+            version = Version.objects.get(pk=version_id)
+        except Version.DoesNotExist:
+            return None
+
+        content_language = getattr(version.content, "language", None)
+        if not content_language:
+            # Non-language-aware versionable — nothing to fix.
+            return None
+
+        from cms.utils.i18n import get_language_list
+
+        if content_language not in get_language_list():
+            return None
+
+        expected_prefix = f"/{content_language}/"
+        if request.path.startswith(expected_prefix):
+            return None
+
+        # Strip whatever the current leading language segment is and replace
+        # it with /<content_language>/.
+        for code in get_language_list():
+            old_prefix = f"/{code}/"
+            if request.path.startswith(old_prefix):
+                new_path = expected_prefix + request.path[len(old_prefix) :]
+                query_string = request.META.get("QUERY_STRING")
+                if query_string:
+                    new_path = f"{new_path}?{query_string}"
+                return HttpResponseRedirect(new_path)
+        return None

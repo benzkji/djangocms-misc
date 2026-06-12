@@ -9,45 +9,12 @@ MIDDLEWARE_PATH = (
 TOOLBAR_MIDDLEWARE_PATH = "cms.middleware.toolbar.ToolbarMiddleware"
 
 
-_toolbar_rebind_done = False
-
-
-def _rebind_toolbar_module_url_helpers(**kwargs):
-    global _toolbar_rebind_done
-    if _toolbar_rebind_done:
-        return
-    _toolbar_rebind_done = True
-    from cms.toolbar import toolbar as toolbar_module
-    from cms.toolbar import utils as toolbar_utils
-
-    toolbar_module.get_object_edit_url = toolbar_utils.get_object_edit_url
-    toolbar_module.get_object_preview_url = toolbar_utils.get_object_preview_url
-    toolbar_module.get_object_structure_url = toolbar_utils.get_object_structure_url
-
-
 class GlobalUntranslatedPlaceholderConfig(AppConfig):
     name = "djangocms_misc.global_untranslated_placeholder"
 
     def ready(self):
-        # cms.toolbar.toolbar imports get_object_{edit,preview,structure}_url
-        # by name from cms.toolbar.utils. Our patch in models.py replaces
-        # the names on cms.toolbar.utils at addon import-time. If
-        # cms.toolbar.toolbar has already been imported by the time our
-        # patch lands, its local references still point at the originals;
-        # rebind them. Use Django's request_started signal because at
-        # app-ready() time the order of apps may put us BEFORE cms.ready(),
-        # which is what populates ``apps.get_app_config('cms').cms_extension``
-        # — a module-level access in cms.toolbar.toolbar. Deferring to
-        # request_started guarantees CMS's autodiscovery has finished.
-        from django.core.signals import request_started
-
-        request_started.connect(
-            _rebind_toolbar_module_url_helpers,
-            dispatch_uid="gup_rebind_toolbar_url_helpers",
-        )
-
-        # Only enforce the middleware contract when the addon is actually
-        # enabled. When it's off (the default), no middleware is needed.
+        # Only enforce the configuration contract when the addon is actually
+        # enabled. When it's off (the default), nothing needs to be in place.
         if not getattr(settings, "DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS", None):
             return
 

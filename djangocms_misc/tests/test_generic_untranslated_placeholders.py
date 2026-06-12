@@ -188,6 +188,74 @@ class EditUrlRedirectTests(TestCase):
         self.assertIsNone(response)
 
 
+class VersioningEditRedirectUrlPrefixTests(TestCase):
+    """When ``_call_toolbar`` activates ``force_language(toolbar_language)``
+    (a user-UI preference, NOT the URL prefix language), the toolbar's
+    Edit / Neuer Entwurf button's ``reverse(…edit_redirect)`` call produces
+    the wrong URL prefix. The middleware catches the request here and
+    rewrites the leading language segment to match the language baked
+    into the version's content."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.middleware = EditModeDefaultLanguageMiddleware(
+            get_response=lambda r: None,
+        )
+
+    def _process(self, request, version_id, url_name):
+        match = mock.Mock(url_name=url_name)
+        request.resolver_match = match
+        request.user = mock.Mock(is_authenticated=True, is_staff=True)
+        return self.middleware.process_view(
+            request,
+            None,
+            (str(version_id),),
+            {},
+        )
+
+    def test_redirects_to_content_language_prefix(self):
+        from djangocms_versioning.models import Version
+
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        de_version = Version.objects.get_for_content(de)
+        path = f"/en/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/"
+        request = self.factory.post(path)
+        response = self._process(
+            request,
+            de_version.pk,
+            "cms_blogpostcontentversion_edit_redirect",
+        )
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 302)
+        # URL prefix rewritten from /en/ to /de/ (de_version.content.language).
+        self.assertEqual(
+            response["Location"],
+            f"/de/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/",
+        )
+
+    def test_no_redirect_when_prefix_already_matches(self):
+        from djangocms_versioning.models import Version
+
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        de_version = Version.objects.get_for_content(de)
+        path = f"/de/admin/cms/blogpostcontentversion/{de_version.pk}/edit-redirect/"
+        request = self.factory.post(path)
+        response = self._process(
+            request,
+            de_version.pk,
+            "cms_blogpostcontentversion_edit_redirect",
+        )
+        self.assertIsNone(response)
+
+    def test_no_redirect_for_unrelated_url_name(self):
+        post, en, de, _, _ = _make_blogpost_with_languages()
+        path = "/en/admin/whatever/"
+        request = self.factory.get(path)
+        response = self._process(request, 1, "whatever_view")
+        self.assertIsNone(response)
+
+
 class AutoCreateDefaultLanguageDraftTests(TestCase):
     """When the default-language sibling has only a PUBLISHED Version (no
     DRAFT), the middleware/helper must NOT redirect onto the immutable
@@ -592,207 +660,6 @@ class AddonDisabledTests(TestCase):
         post, en, de, en_ph, de_ph = _make_blogpost_with_languages()
         self.assertEqual(_resolve_default_placeholder(de_ph).pk, de_ph.pk)
         self.assertIsNone(utils.get_default_language_sibling(de))
-
-
-class ToolbarUrlHelperLanguagePriorityTests(TestCase):
-    """Regression: cms.toolbar.utils.get_object_{edit,preview,structure}_url
-    have ``language = getattr(obj, "language", language)  # Object trumps
-    parameter``, so even when CMSToolbar passes ``language=request_language``,
-    the URL is reversed under ``force_language(obj.language)`` and the
-    prefix becomes ``/<obj.language>/``.
-
-    In our addon's flow the editor is on ``/de/`` editing the default-language
-    sibling (an en PageContent). After a plugin save the structure board
-    reloads via ``cms_edit_url`` exposed in the toolbar context — without
-    this patch, it lands on ``/en/admin/.../edit/<en_pk>/`` and the entire
-    admin flips to English. The patch in models.py rewrites the URL's
-    leading language segment to honour the explicit ``language`` parameter
-    so the editor stays on ``/de/``."""
-
-    def test_edit_url_honours_explicit_language_parameter(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # en.language == 'en'; explicit request for 'de' must win.
-        url = toolbar_utils.get_object_edit_url(en, language="de")
-        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
-        # The object_id portion still references the en object.
-        self.assertIn(f"/edit/{en.pk}/", url)
-
-    def test_preview_url_honours_explicit_language_parameter(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        url = toolbar_utils.get_object_preview_url(en, language="de")
-        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
-
-    def test_structure_url_honours_explicit_language_parameter(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        url = toolbar_utils.get_object_structure_url(en, language="de")
-        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
-
-    def test_unaltered_when_language_matches_object(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Explicit language matches obj.language => unchanged.
-        url = toolbar_utils.get_object_edit_url(en, language="en")
-        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
-
-    def test_unaltered_when_no_language_parameter(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # No language parameter => original CMS behavior (obj.language wins).
-        url = toolbar_utils.get_object_edit_url(en)
-        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
-
-    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
-    def test_unaltered_when_addon_disabled(self):
-        from cms.toolbar import utils as toolbar_utils
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Addon off => CMS's "object trumps parameter" rule applies unchanged.
-        url = toolbar_utils.get_object_edit_url(en, language="de")
-        self.assertTrue(
-            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
-        )
-
-
-class VersioningGetPreviewUrlPatchTests(TestCase):
-    """Regression: djangocms-versioning's publish_view redirects to
-    ``get_preview_url(version.content)``. That helper, when no explicit
-    ``language`` is passed, falls back to ``content_obj.language`` — which
-    in our addon's flow is always the default (en). The CMS-side patch
-    on ``get_object_preview_url`` then sees a matching ``language ==
-    obj.language`` and skips the URL rewrite. End result: editor publishes
-    from ``/de/...`` and lands on ``/en/.../preview/<en_pk>/``.
-
-    This patch makes versioning's ``get_preview_url`` use the current
-    request language (via ``django.utils.translation.get_language()``,
-    set by LocaleMiddleware) when no explicit language is given."""
-
-    def test_get_preview_url_uses_request_language_when_no_arg(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Simulate the user being on /de/: LocaleMiddleware activates 'de'.
-        with override("de"):
-            url = versioning_helpers.get_preview_url(en)
-        self.assertTrue(
-            url.startswith("/de/"),
-            f"expected /de/ prefix from active language, got {url!r}",
-        )
-        self.assertIn(f"/preview/{en.pk}/", url)
-
-    def test_get_preview_url_respects_explicit_language(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Explicit language wins over the active one.
-        with override("en"):
-            url = versioning_helpers.get_preview_url(en, language="de")
-        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
-
-    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
-    def test_get_preview_url_unaltered_when_addon_disabled(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Addon off -> versioning's original behaviour: content.language wins.
-        with override("de"):
-            url = versioning_helpers.get_preview_url(en)
-        self.assertTrue(
-            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
-        )
-
-
-class VersioningGetEditableUrlPatchTests(TestCase):
-    """Regression: djangocms-versioning's ``edit_redirect_view`` (after
-    creating a new draft) redirects to
-    ``djangocms_versioning.helpers.get_editable_url(target.content)``.
-    The original always uses ``getattr(content_obj, "language", None)`` —
-    always the default (en) under our addon, so the resulting URL has
-    ``/en/`` prefix. After "Neuer Entwurf" on a /de/ preview the editor
-    lands on ``/en/.../edit/<en_pk>/``.
-
-    The patch redirects to ``cms.toolbar.utils.get_object_edit_url`` with
-    the active request language when the addon is enabled and the
-    request language differs from the content's, so the CMS-side URL
-    rewrite kicks in and the editor stays on ``/de/``."""
-
-    def test_get_editable_url_uses_request_language(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        with override("de"):
-            url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
-        self.assertIn(f"/edit/{en.pk}/", url)
-
-    def test_get_editable_url_unaltered_when_request_matches_obj(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        # Active language matches obj.language => original behaviour.
-        with override("en"):
-            url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(url.startswith("/en/"), f"got {url!r}")
-
-    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
-    def test_get_editable_url_unaltered_when_addon_disabled(self):
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        with override("de"):
-            url = versioning_helpers.get_editable_url(en)
-        self.assertTrue(
-            url.startswith("/en/"), f"expected unpatched /en/ behaviour, got {url!r}"
-        )
-
-    def test_get_editable_url_accepts_three_positional_args_for_versioning_2_5(self):
-        """Regression: djangocms-versioning 2.5+ added a third positional
-        ``params`` arg to ``get_editable_url``; ``edit_redirect_view`` calls
-        it as ``get_editable_url(target.content, force_admin, request.GET)``.
-        Our patch's signature must accept that without TypeError."""
-        from django.http import QueryDict
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        params = QueryDict("language=es&foo=bar")
-        with override("de"):
-            # Simulate the 2.5+ call site: 3 positional args.
-            url = versioning_helpers.get_editable_url(en, False, params)
-        # The patch rewrites to /de/ AND appends ``params.urlencode()``.
-        self.assertTrue(url.startswith("/de/"), f"expected /de/ prefix, got {url!r}")
-        self.assertIn(f"/edit/{en.pk}/", url)
-        self.assertIn("language=es", url)
-        self.assertIn("foo=bar", url)
-
-    def test_get_editable_url_with_params_kwarg(self):
-        """Same as above but with ``params`` passed by keyword."""
-        from django.http import QueryDict
-        from django.utils.translation import override
-        from djangocms_versioning import helpers as versioning_helpers
-
-        post, en, de, _, _ = _make_blogpost_with_languages()
-        with override("de"):
-            url = versioning_helpers.get_editable_url(
-                en,
-                force_admin=False,
-                params=QueryDict("x=1"),
-            )
-        self.assertTrue(url.startswith("/de/"), f"got {url!r}")
-        self.assertIn("x=1", url)
 
 
 class AppReadyConfigCheckTests(TestCase):

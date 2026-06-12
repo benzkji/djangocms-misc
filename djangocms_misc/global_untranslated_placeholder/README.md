@@ -54,12 +54,10 @@ it's pointed at the **default-language content**. Concretely:
 | Aspect | Behavior |
 |---|---|
 | Rendering on `/de/<page>/` | Plugins from the en `PageContent` render. The renderer swaps in the default-language placeholder for each requested slot. |
-| Editing on `/de/<page>/?edit` | URL is rewritten to the en object id; the editor edits the en placeholders directly. |
+| Editing on `/de/<page>/?edit` | The middleware rewrites the URL to point at the en object id (URL prefix `/de/` is preserved); the editor edits the en placeholders directly. |
 | Edit URL when only en PUBLISHED exists | A new en DRAFT is auto-created via `Version.copy(user)` (same code path as the toolbar's "New Draft" button), and the editor lands on the new draft. |
 | Programmatic `cms.api.add_plugin(de_placeholder, ..., language='de')` | The plugin's `language` is force-pinned to `en` by a `pre_save` signal (defense in depth). |
-| Plugin save reload | The structure board's post-save reload of the page (via `cms_edit_url` in the toolbar context) stays on the editor's chosen URL prefix (`/de/`) — does not flip the admin to `/en/`. |
-| Publish redirect | After a successful publish from `/de/`, djangocms-versioning's `publish_view` redirects to the preview URL of the now-published content. Without the patch, that URL is built from `content_obj.language='en'` and the editor lands on `/en/.../preview/<en_pk>/`. With the patch, the redirect target keeps the editor's `/de/` prefix. |
-| New-draft redirect | After "Neuer Entwurf"/New Draft on `/de/`, versioning's `edit_redirect_view` creates the en draft and redirects to its edit URL. Without the patch, `get_editable_url` derives `/en/` from `content_obj.language`. With the patch, the URL keeps the `/de/` prefix. |
+| Toolbar's Edit / Neuer Entwurf button URL | Built via `reverse(...)` under `force_language(toolbar_language)` — when the editor's `user_settings.language` differs from the URL prefix they're on, the URL prefix is wrong. The middleware intercepts the resulting `*_edit_redirect` request, reads `version.content.language`, and 302s to the correct prefix. |
 | Publishing the en content | Every other-language `PageContent` for the same page that has BOTH a DRAFT and an existing PUBLISHED Version is also published. New-but-unpublished languages are left alone. |
 
 The addon generalizes beyond `PageContent` to **any** content model registered
@@ -109,86 +107,48 @@ Resolution: `_resolve_default_placeholder(placeholder)` reads
 a `language` field, and looks up the default-language sibling. On match,
 returns the sibling's same-slot `Placeholder`; on miss, returns the original.
 
-Also in `models.py`: `_patch_toolbar_url_helpers()` wraps
-`cms.toolbar.utils.get_object_{edit,preview,structure}_url`. The original
-helpers have the rule `language = getattr(obj, "language", language)
-# Object trumps parameter`, so even when `CMSToolbar` passes
-`language=self.request_language`, the URL is reversed under
-`force_language(obj.language)` and the prefix becomes `/<obj.language>/`.
-With the addon enabled, an editor on `/de/` editing the default-language
-sibling (an en PageContent) would see the structure board post-save
-reload (via `cms_edit_url` in the toolbar context) land on `/en/`,
-flipping the entire admin into English mid-edit. The patch calls the
-original to keep all other concerns (live-url querystring, language-
-list validation) and then post-processes the returned URL, replacing
-the leading `/<obj.language>/` segment with `/<language>/` when the
-caller asked for a specific language that differs from `obj.language`.
-Gated on the addon being enabled, so non-untranslated projects are
-unaffected.
-
-Because `cms.toolbar.toolbar` does `from cms.toolbar.utils import
-get_object_edit_url, ...` at module load (binding the originals locally),
-`apps.py` connects a one-shot `request_started` signal handler that
-rebinds those module-level names to the patched versions on the first
-request. The rebind is deferred to first-request because
-`cms.toolbar.toolbar`'s import-time code reads
-`apps.get_app_config('cms').cms_extension.toolbar_mixins`, which isn't
-populated until `cms.ready()` runs — and the addon's `ready()` runs
-first when our app is listed before `cms` in `INSTALLED_APPS`.
-
-`_patch_versioning_url_helpers()` (only active when
-`djangocms-versioning` is installed) covers two post-redirect paths:
-
-- **`get_preview_url`** — called by `publish_view` after publishing,
-  and similar flows. The helper, when no explicit `language` is given,
-  falls back to `getattr(content_obj, "language", get_language())` — so
-  under our addon, where `content_obj` is always the default-language
-  sibling, it always picks `'en'` and propagates to the CMS-side helper
-  as a matching `language=='en'` (which skips the toolbar-URL rewrite
-  above). The patch flips the default: when no `language` is passed
-  AND the addon is enabled, use `django.utils.translation.get_language()`
-  (the request language activated by `LocaleMiddleware`). The CMS-side
-  patch then rewrites the URL's prefix from `/en/` to `/de/`.
-
-- **`get_editable_url`** — called by `edit_redirect_view` after
-  creating a new draft (e.g. on "Neuer Entwurf"). The original has no
-  `language` parameter at all — it always uses
-  `getattr(content_obj, "language", None)` and calls into
-  `cms.toolbar.utils.get_object_edit_url`, again with a matching
-  `language` so the CMS-side rewrite is skipped. The patch detects the
-  same "addon enabled + request language differs from
-  `content_obj.language`" condition and calls `get_object_edit_url`
-  directly with the request language, letting the CMS-side rewrite
-  preserve the editor's URL prefix.
-
-  Compatible with both djangocms-versioning **≤2.4**
-  (`get_editable_url(content_obj, force_admin=False)`) and **2.5+**
-  (`get_editable_url(content_obj, force_admin=False, params=None)`,
-  where `params` is `request.GET` forwarded from `edit_redirect_view`).
-  The patched function accepts `params` as a positional or keyword
-  argument and appends it via `params.urlencode()` to the rewritten
-  URL the same way the upstream helper does; unknown future kwargs
-  are forwarded through `**kwargs` to the original.
-
-Both `djangocms_versioning.helpers.{get_preview_url,get_editable_url}`
-and the `djangocms_versioning.admin.{get_preview_url,get_editable_url}`
-imports (`admin.py` binds them by name at module load) are rebound.
+**URL prefix handling is in `middleware.py`, not here.** Earlier
+revisions of this addon also monkey-patched
+`cms.toolbar.utils.get_object_{edit,preview,structure}_url` and
+`djangocms_versioning.helpers.{get_preview_url,get_editable_url,
+get_object_live_url}` to keep the editor's URL prefix consistent across
+publish / new-draft / preview redirects. Those patches were brittle
+(each consumer of the helpers captured the function object at its own
+import time, requiring per-module late rebinding) and have been
+**removed**. The middleware's path-rewrite is the only mechanism that
+keeps the URL prefix correct now — see `middleware.py` below.
 
 ### 2. `middleware.py` — edit-mode URL redirect
 
-`EditModeDefaultLanguageMiddleware.process_view` intercepts three CMS
-admin URL names:
+`EditModeDefaultLanguageMiddleware.process_view` intercepts two
+families of URL:
 
 ```
-cms_placeholder_render_object_edit       — auto-create-draft allowed
-cms_placeholder_render_object_structure  — auto-create-draft allowed
-cms_placeholder_render_object_preview    — strict state-match, no side effects
+cms_placeholder_render_object_edit            — auto-create-draft allowed
+cms_placeholder_render_object_structure       — auto-create-draft allowed
+cms_placeholder_render_object_preview         — strict state-match, no side effects
+*_edit_redirect (djangocms-versioning)        — rewrite URL prefix to content.language
 ```
 
-When the targeted object's language is not the default, the middleware
-rewrites the trailing object_id in `request.path` (the URL prefix `/de/` is
-**preserved** so downstream `cms_path` queries keep the original language,
-which `django-modeltranslation` and similar use to pick the right tab).
+**Placeholder edit/structure/preview URLs.** When the targeted object's
+language is not the default, the middleware rewrites the trailing
+`object_id` in `request.path` (the URL prefix `/de/` is **preserved**
+so downstream `cms_path` queries keep the original language, which
+`django-modeltranslation` and similar use to pick the right tab).
+
+**Versioning edit-redirect URLs.** The toolbar's Edit / Neuer Entwurf
+button builds its `href` via `reverse(...)` inside
+`_call_toolbar`'s `with force_language(self.toolbar_language)`. When
+the editor's `user_settings.language` (UI preference) differs from
+the URL prefix they're on, the button URL has the wrong language
+prefix — clicking it would flip the whole admin flow into the wrong
+language. The middleware looks up the `Version`, reads
+`version.content.language` (the ground truth — each version belongs
+to a specific PageContent in a specific language), and redirects to
+the same edit-redirect URL under `/<content.language>/`. From there,
+versioning's own `edit_redirect_view` runs under the correct
+`request_language` and the rest of the flow (draft creation, redirect
+to `get_editable_url`) lands on the right prefix.
 
 For edit and structure URLs, the swap target is computed by
 `get_default_language_editable_sibling(content, user)`:
@@ -229,20 +189,17 @@ on each yielded sibling. Constraints:
 
 The receiver is only connected when `djangocms_versioning` is installed.
 
-### 4. `apps.py` — startup configuration check + deferred rebind
+### 4. `apps.py` — startup configuration checks
 
-`GlobalUntranslatedPlaceholderConfig.ready()`:
+`GlobalUntranslatedPlaceholderConfig.ready()` runs only when the addon
+is enabled (`DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS` is truthy) and
+raises `ImproperlyConfigured` on misconfiguration:
 
-- Connects a one-shot `request_started` signal that rebinds
-  `cms.toolbar.toolbar`'s local references to the patched
-  `get_object_edit_url` / `get_object_preview_url` /
-  `get_object_structure_url`. Deferred because `cms.toolbar.toolbar`'s
-  module-level code reads `apps.get_app_config('cms').cms_extension`,
-  which isn't populated until `cms.ready()` runs.
-- Raises `ImproperlyConfigured` when the addon is enabled but
-  `EditModeDefaultLanguageMiddleware` is missing from `MIDDLEWARE`,
-  or when it appears **before** `cms.middleware.toolbar.ToolbarMiddleware`.
-  Skipped when the addon is off.
+- **Middleware presence** — `EditModeDefaultLanguageMiddleware` must
+  appear in `MIDDLEWARE`.
+- **Middleware ordering** — it must come **after**
+  `cms.middleware.toolbar.ToolbarMiddleware` (the redirect handler
+  reads `request.toolbar`, which the CMS middleware sets up).
 
 ---
 
@@ -348,27 +305,17 @@ sync with the default language's publish cycle.
   consumers like `django-modeltranslation` read to pick the right
   translation tab. Using `reverse()` (which would re-prefix the URL with
   `/en/`) is deliberately avoided.
-- **URL prefix preservation in the structure board reload.** After a
-  plugin save, the structure board reloads the page via `cms_edit_url`
-  computed by `CMSToolbar.get_object_edit_url()`. Without the toolbar
-  URL helper patch (see `models.py:_patch_toolbar_url_helpers`), the
-  CMS rule `language = getattr(obj, "language", language)  # Object
-  trumps parameter` forces the reload onto `/en/<...>` because the
-  edited object is the en default-language sibling — silently flipping
-  the editor into the English admin mid-session. The patch rewrites
-  the URL's leading language segment to match the explicitly-requested
-  language so the editor stays on `/de/`.
-- **URL prefix preservation in the publish redirect** and the
-  **new-draft redirect**. djangocms-versioning's `publish_view` and
-  `edit_redirect_view` build their redirect URLs from
-  `get_preview_url` / `get_editable_url`, both of which default to
-  `content_obj.language` (always en under the addon). The CMS-side
-  rewrite can't catch them because the language they pass matches
-  `obj.language`. The `_patch_versioning_url_helpers()` patch makes
-  both helpers use the request language
-  (`django.utils.translation.get_language()`) when no explicit
-  language is given, so the redirect target keeps the editor's URL
-  prefix.
+- **Edit / Neuer Entwurf button URL.** The toolbar's Edit / New Draft
+  button is built via `reverse(...)` inside
+  `CMSToolbar._call_toolbar`'s `with force_language(self.toolbar_language)`
+  block. `toolbar_language` follows the editor's UI-language preference
+  (`user_settings.language`) and can differ from the URL prefix the
+  editor is on. The middleware intercepts the resulting
+  `*_edit_redirect` requests, reads the language off
+  `version.content.language`, and rewrites the URL prefix so the rest
+  of the versioning flow runs under the right language. We do NOT
+  touch `toolbar_language` itself — it remains a user preference for
+  the toolbar UI.
 - **No live data mutation.** The editable-sibling lookup never returns
   a PUBLISHED content. CMS's own check `object_is_editable()` would
   redirect a PUBLISHED edit to a read-only preview; auto-create-draft
