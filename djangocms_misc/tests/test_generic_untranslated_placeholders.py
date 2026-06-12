@@ -256,6 +256,191 @@ class VersioningEditRedirectUrlPrefixTests(TestCase):
         self.assertIsNone(response)
 
 
+class VersioningActionUrlPrefixTests(TestCase):
+    """djangocms-versioning's version-id-keyed action endpoints
+    (``*_publish`` / ``*_unpublish`` / ``*_revert`` / ``*_archive`` /
+    ``*_discard``) compute their post-action redirect URL from
+    ``version.content.language``. Under this addon, ``content.language``
+    is always the default ('en'), so every redirect lands on ``/en/...``
+    regardless of which language URL the editor was on.
+
+    We can't 302 the inbound POST itself — these endpoints are POST-only
+    and a 302 would convert POST→GET, yielding 405. We rewrite the
+    response Location instead. The Referer is the source of truth — it's
+    the URL the editor was on when they clicked the action button."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.middleware = EditModeDefaultLanguageMiddleware(
+            get_response=lambda r: self._stub_response,
+        )
+        self._stub_response = None
+
+    def _run(self, path, location, url_name, referer=None, status=302):
+        from django.http import HttpResponse, HttpResponseRedirect
+
+        if location is None:
+            self._stub_response = HttpResponse(status=200)
+        elif status == 302:
+            self._stub_response = HttpResponseRedirect(location)
+        else:
+            resp = HttpResponse(status=status)
+            resp["Location"] = location
+            self._stub_response = resp
+
+        request = self.factory.post(path)
+        request.resolver_match = mock.Mock(url_name=url_name)
+        if referer is not None:
+            request.META["HTTP_REFERER"] = referer
+        # The middleware calls get_response, which our setUp wired to
+        # return self._stub_response.
+        return self.middleware(request)
+
+    def test_publish_response_location_rewritten_to_referer_language(self):
+        """Case 1 from the plan: toolbar_language='en', editor on /de/.
+        Inbound is /en/.../publish/, Referer is /de/<page>/edit/.
+        Location /en/.../preview/<pk>/ is rewritten to /de/.../preview/<pk>/."""
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/some-page/?edit",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+    def test_publish_response_location_rewritten_when_request_matches_referer(
+        self,
+    ):
+        """Case 2 from the plan: toolbar_language='de', editor on /de/.
+        Inbound is /de/.../publish/, Referer is /de/<page>/.
+        Location /en/.../preview/<pk>/ is still rewritten to /de/... because
+        the rule keys off Referer→Location mismatch, not request→Location."""
+        response = self._run(
+            path="/de/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/some-page/",
+        )
+        self.assertEqual(
+            response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+    def test_publish_response_no_rewrite_when_intended_matches_location(self):
+        response = self._run(
+            path="/de/admin/cms/pagecontentversion/42/publish/",
+            location="/de/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/some-page/",
+        )
+        self.assertEqual(
+            response["Location"], "/de/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+    def test_publish_response_no_rewrite_when_referer_missing(self):
+        """Referer is the sole source of truth — when it's missing, no
+        rewrite (the editor gets upstream's default behavior)."""
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer=None,
+        )
+        self.assertEqual(
+            response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+    def test_publish_response_no_rewrite_when_referer_path_has_no_known_language(
+        self,
+    ):
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/some/path/",
+        )
+        self.assertEqual(
+            response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+    def test_publish_response_no_rewrite_when_location_has_no_language_prefix(
+        self,
+    ):
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/admin/something/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/page/",
+        )
+        self.assertEqual(response["Location"], "/admin/something/")
+
+    def test_publish_response_no_rewrite_for_non_3xx(self):
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/page/",
+            status=200,
+        )
+        # 200 response → no Location rewrite.
+        self.assertEqual(
+            response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_publish_response_preserves_querystring_and_fragment(self):
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/something/?next=/en/&x=1#frag",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/page/",
+        )
+        self.assertEqual(
+            response["Location"], "/de/admin/something/?next=/en/&x=1#frag"
+        )
+
+    def test_other_action_endpoints_use_same_handler(self):
+        """``_unpublish`` / ``_revert`` / ``_archive`` / ``_discard`` all
+        match the suffix tuple and get the same Location rewrite."""
+        for suffix in ("unpublish", "revert", "archive", "discard"):
+            with self.subTest(action=suffix):
+                response = self._run(
+                    path=f"/en/admin/cms/pagecontentversion/42/{suffix}/",
+                    location="/en/admin/cms/placeholder/object/13/preview/7/",
+                    url_name=f"cms_pagecontentversion_{suffix}",
+                    referer="http://testserver/de/page/",
+                )
+                self.assertEqual(
+                    response["Location"],
+                    "/de/admin/cms/placeholder/object/13/preview/7/",
+                )
+
+    def test_non_action_url_name_passes_through(self):
+        response = self._run(
+            path="/en/admin/cms/something/",
+            location="/en/admin/elsewhere/",
+            url_name="cms_something_changelist",
+            referer="http://testserver/de/page/",
+        )
+        # No suffix match → Location untouched.
+        self.assertEqual(response["Location"], "/en/admin/elsewhere/")
+
+    @override_settings(DJANGOCMS_MISC_UNTRANSLATED_PLACEHOLDERS=None)
+    def test_no_rewrite_when_addon_disabled(self):
+        response = self._run(
+            path="/en/admin/cms/pagecontentversion/42/publish/",
+            location="/en/admin/cms/placeholder/object/13/preview/7/",
+            url_name="cms_pagecontentversion_publish",
+            referer="http://testserver/de/page/",
+        )
+        self.assertEqual(
+            response["Location"], "/en/admin/cms/placeholder/object/13/preview/7/"
+        )
+
+
 class AutoCreateDefaultLanguageDraftTests(TestCase):
     """When the default-language sibling has only a PUBLISHED Version (no
     DRAFT), the middleware/helper must NOT redirect onto the immutable

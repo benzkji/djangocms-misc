@@ -120,14 +120,18 @@ keeps the URL prefix correct now — see `middleware.py` below.
 
 ### 2. `middleware.py` — edit-mode URL redirect
 
-`EditModeDefaultLanguageMiddleware.process_view` intercepts two
-families of URL:
+`EditModeDefaultLanguageMiddleware` does three things:
 
 ```
-cms_placeholder_render_object_edit            — auto-create-draft allowed
-cms_placeholder_render_object_structure       — auto-create-draft allowed
-cms_placeholder_render_object_preview         — strict state-match, no side effects
-*_edit_redirect (djangocms-versioning)        — rewrite URL prefix to content.language
+process_view:
+  cms_placeholder_render_object_edit            — auto-create-draft allowed
+  cms_placeholder_render_object_structure       — auto-create-draft allowed
+  cms_placeholder_render_object_preview         — strict state-match, no side effects
+  *_edit_redirect (djangocms-versioning)        — rewrite URL prefix to content.language
+
+__call__ (process_response):
+  *_publish / *_unpublish / *_revert            — rewrite redirect Location to Referer's language
+  *_archive / *_discard
 ```
 
 **Placeholder edit/structure/preview URLs.** When the targeted object's
@@ -149,6 +153,28 @@ the same edit-redirect URL under `/<content.language>/`. From there,
 versioning's own `edit_redirect_view` runs under the correct
 `request_language` and the rest of the flow (draft creation, redirect
 to `get_editable_url`) lands on the right prefix.
+
+**Versioning publish / unpublish / revert / archive / discard URLs.**
+Versioning's `*_publish` / `*_unpublish` / `*_revert` / `*_archive` /
+`*_discard` views are POST-only (admin.py:1104 returns 405 to GET) and
+their post-action redirect URL is built from `version.content.language`
+via `get_preview_url` / `get_object_live_url` / `version_list_url`.
+Under this addon the editor is editing the default-language sibling
+(`content.language = 'en'`), so those redirects always land on
+`/en/...` regardless of the URL prefix the editor was actually on.
+
+We can't 302 the inbound POST — a 302 would convert POST→GET and
+versioning would return 405. The middleware instead rewrites the
+**response** Location: when the response is a 3xx for one of these
+action URL names and its Location's leading language segment differs
+from the HTTP Referer's, we swap the Location's leading `/<lang>/` to
+match the Referer's. **The Referer is the source of truth** — it's
+the URL the editor was on when they clicked the action button.
+
+No-op when: the URL name doesn't match, the response is not a 3xx,
+the Location has no recognised leading language segment, the Referer
+is missing/unparseable/has no recognised leading language, or the
+Referer's language already matches the Location's.
 
 For edit and structure URLs, the swap target is computed by
 `get_default_language_editable_sibling(content, user)`:
@@ -316,6 +342,17 @@ sync with the default language's publish cycle.
   of the versioning flow runs under the right language. We do NOT
   touch `toolbar_language` itself — it remains a user preference for
   the toolbar UI.
+- **Publish / unpublish / revert / archive / discard redirect target.**
+  Versioning's action views are POST-only and their post-action
+  redirect URLs are built from `content.language` (always en under
+  this addon), so the editor would always land on `/en/...`. We
+  can't 302 the inbound POST (a 302 → GET would yield a 405). The
+  middleware rewrites the **response** Location instead: when the
+  response is a 3xx and its Location's leading language segment
+  differs from the HTTP Referer's leading language segment, swap
+  Location's leading `/<lang>/` to match the Referer. The Referer is
+  the source of truth — it's where the editor was when they clicked
+  the action button.
 - **No live data mutation.** The editable-sibling lookup never returns
   a PUBLISHED content. CMS's own check `object_is_editable()` would
   redirect a PUBLISHED edit to a read-only preview; auto-create-draft
